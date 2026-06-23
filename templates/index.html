@@ -1031,22 +1031,23 @@ function renderCollectionsPane(data) {
   const cols = Object.entries(data.per_collection);
   if (!cols.length) { pane.innerHTML = '<div class="no-data">No collection data.</div>'; return; }
 
-  // Build sort rows: [name, buys, sells, buyEth, sellEth, feesEth, feeBps, pnl, roi, avgHold, open, addr]
+  // Build sort rows: [name, buys, sells, buyEth, sellEth, feesEth, feeBps, pnl, roi, avgHold, open, lastTs, addr, s]
+  // Indices 0-11 map 1:1 to the 12 visible columns so clicking any header sorts the right field.
   const rows = cols.map(([addr, s]) => [
-    (s.name || addr).toLowerCase(),
-    s.buys || 0,
-    s.sells || 0,
-    s.buy_eth || 0,
-    s.sell_eth || 0,
-    s.fees_eth || 0,
-    s.total_fee_bps || 0,
-    s.realized_pnl || 0,
-    s.roi != null ? s.roi * 100 : null,  // [8] roi as %
-    s.avg_holding_secs || 0,
-    s.open_positions || 0,
-    addr,    // [11] metadata
-    s,       // [12] full stats
-    s.last_trade_ts || 0,  // [13] last trade unix timestamp
+    (s.name || addr).toLowerCase(),        // [0]  Collection
+    s.buys || 0,                           // [1]  Buys
+    s.sells || 0,                          // [2]  Sells
+    s.buy_eth || 0,                        // [3]  Spent ETH
+    s.sell_eth || 0,                       // [4]  Rcvd ETH
+    s.fees_eth || 0,                       // [5]  Fees ETH
+    s.total_fee_bps || 0,                  // [6]  Fee %
+    s.realized_pnl || 0,                   // [7]  PnL ETH
+    s.roi != null ? s.roi * 100 : null,    // [8]  ROI
+    s.avg_holding_secs || 0,              // [9]  Avg Hold
+    s.open_positions || 0,                 // [10] Open
+    s.last_trade_ts || 0,                  // [11] Last Trade  ← sort key
+    addr,                                  // [12] metadata
+    s,                                     // [13] full stats
   ]);
 
   pane.innerHTML = `
@@ -1067,7 +1068,7 @@ function renderCollectionsPane(data) {
 }
 
 function renderColRow(row) {
-  const [,,, , , , feeBps, pnl, roi, avgHold, open, addr, s, lastTs] = row;
+  const [,,, , , , feeBps, pnl, roi, avgHold, open, lastTs, addr, s] = row;
   const name = esc((s.name || addr).slice(0,30));
   const pnlCls = pnl > 0 ? 'pos' : pnl < 0 ? 'neg' : '';
   const roiCls = roi > 0 ? 'pos' : roi < 0 ? 'neg' : '';
