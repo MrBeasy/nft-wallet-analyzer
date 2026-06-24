@@ -153,6 +153,7 @@ def compute_analytics(trades: list) -> dict:
         "wins": 0,
         "losses": 0,
         "last_trade_ts": 0,
+        "first_trade_ts": None,
     })
 
     unmatched_sell_keys = {(u["collection_address"], u["nft_id"]) for u in all_unmatched_sells}
@@ -165,6 +166,8 @@ def compute_analytics(trades: list) -> dict:
         ts = row.get("block_timestamp") or 0
         if ts > col_stats[col]["last_trade_ts"]:
             col_stats[col]["last_trade_ts"] = ts
+        if ts and (col_stats[col]["first_trade_ts"] is None or ts < col_stats[col]["first_trade_ts"]):
+            col_stats[col]["first_trade_ts"] = ts
         if row["side"] == "buy":
             col_stats[col]["buys"] += 1
             col_stats[col]["buy_eth"] += row["eth_amount"]

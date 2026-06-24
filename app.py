@@ -341,6 +341,7 @@ def api_meta():
         "realized_pnl": 0.0, "matched_trades": 0,
         "holding_times": [], "open_positions": 0, "total_fee_bps": 0,
         "wins": 0, "losses": 0,
+        "first_trade_ts": None,
     })
 
     for wallet in all_wallets:
@@ -365,11 +366,22 @@ def api_meta():
             m["total_fee_bps"] = s["total_fee_bps"]
             m["wins"] += s.get("wins", 0)
             m["losses"] += s.get("losses", 0)
+            ft = s.get("first_trade_ts")
+            if ft and (m["first_trade_ts"] is None or ft < m["first_trade_ts"]):
+                m["first_trade_ts"] = ft
 
     with db.get_conn() as conn:
-        last_ts_map = {r[0]: r[1] for r in conn.execute(
-            "SELECT collection_address, MAX(block_timestamp) FROM trades GROUP BY collection_address"
-        ).fetchall()}
+        ts_rows = conn.execute(
+            "SELECT collection_address, MAX(block_timestamp), MIN(block_timestamp) FROM trades GROUP BY collection_address"
+        ).fetchall()
+        last_ts_map = {r[0]: r[1] for r in ts_rows}
+        first_ts_map = {r[0]: r[2] for r in ts_rows}
+        cutoff_7d = int(_time.time()) - 7 * 86400
+        recent_rows = conn.execute(
+            "SELECT collection_address, COUNT(*) FROM trades WHERE block_timestamp >= ? GROUP BY collection_address",
+            (cutoff_7d,)
+        ).fetchall()
+        trades_7d_map = {r[0]: r[1] for r in recent_rows}
 
     rows = []
     for addr, s in merged.items():
@@ -400,6 +412,8 @@ def api_meta():
             "open_positions": s["open_positions"],
             "total_fee_bps": s["total_fee_bps"],
             "last_trade_ts": last_ts_map.get(addr),
+            "first_trade_ts": s.get("first_trade_ts") or first_ts_map.get(addr),
+            "trades_7d": trades_7d_map.get(addr, 0),
         })
 
     rows.sort(key=lambda r: r["roi_pct"], reverse=True)

@@ -1031,8 +1031,8 @@ function renderCollectionsPane(data) {
   const cols = Object.entries(data.per_collection);
   if (!cols.length) { pane.innerHTML = '<div class="no-data">No collection data.</div>'; return; }
 
-  // Build sort rows: [name, buys, sells, buyEth, sellEth, feesEth, feeBps, pnl, roi, avgHold, open, lastTs, addr, s]
-  // Indices 0-11 map 1:1 to the 12 visible columns so clicking any header sorts the right field.
+  // Build sort rows: [name, buys, sells, buyEth, sellEth, feesEth, feeBps, pnl, roi, avgHold, open, lastTs, firstTs, addr, s]
+  // Indices 0-12 map 1:1 to the 13 visible columns so clicking any header sorts the right field.
   const rows = cols.map(([addr, s]) => [
     (s.name || addr).toLowerCase(),        // [0]  Collection
     s.buys || 0,                           // [1]  Buys
@@ -1045,9 +1045,10 @@ function renderCollectionsPane(data) {
     s.roi != null ? s.roi * 100 : null,    // [8]  ROI
     s.avg_holding_secs || 0,              // [9]  Avg Hold
     s.open_positions || 0,                 // [10] Open
-    s.last_trade_ts || 0,                  // [11] Last Trade  ← sort key
-    addr,                                  // [12] metadata
-    s,                                     // [13] full stats
+    s.last_trade_ts || 0,                  // [11] Last Trade
+    s.first_trade_ts || 0,                 // [12] First Traded
+    addr,                                  // [13] metadata
+    s,                                     // [14] full stats
   ]);
 
   pane.innerHTML = `
@@ -1058,7 +1059,7 @@ function renderCollectionsPane(data) {
     <div class="tbl-wrap">
       <table id="tbl-collections">
         <thead><tr>
-          ${makeHeaders('collections', ['Collection','Buys','Sells','Spent ETH','Rcvd ETH','Fees ETH','Fee %','PnL ETH','ROI','Avg Hold','Open','Last Trade'], 7, -1)}
+          ${makeHeaders('collections', ['Collection','Buys','Sells','Spent ETH','Rcvd ETH','Fees ETH','Fee %','PnL ETH','ROI','Avg Hold','Open','Last Trade','First Traded'], 7, -1)}
         </tr></thead>
         <tbody></tbody>
       </table>
@@ -1068,7 +1069,7 @@ function renderCollectionsPane(data) {
 }
 
 function renderColRow(row) {
-  const [,,, , , , feeBps, pnl, roi, avgHold, open, lastTs, addr, s] = row;
+  const [,,, , , , feeBps, pnl, roi, avgHold, open, lastTs, firstTs, addr, s] = row;
   const name = esc((s.name || addr).slice(0,30));
   const pnlCls = pnl > 0 ? 'pos' : pnl < 0 ? 'neg' : '';
   const roiCls = roi > 0 ? 'pos' : roi < 0 ? 'neg' : '';
@@ -1088,6 +1089,7 @@ function renderColRow(row) {
     <td class="tc">${hold}</td>
     <td class="tc">${open}</td>
     <td class="tc mono">${lastTs ? new Date(lastTs * 1000).toISOString().slice(0,10) : '—'}</td>
+    <td class="tc mono">${firstTs ? new Date(firstTs * 1000).toISOString().slice(0,10) : '—'}</td>
   </tr>`;
 }
 
@@ -1369,10 +1371,10 @@ function resetMetaFilters() {
 function renderMeta(rows) {
   // ── Spotlight: best by each dimension ────────────────────────────────────
   const withMatched = rows.filter(r => r.matched_trades > 0);
-  const withHold    = rows.filter(r => r.avg_holding_secs != null && r.matched_trades > 0);
 
   const bestRoi     = withMatched.length ? withMatched.reduce((a, b) => a.roi_pct > b.roi_pct ? a : b) : null;
-  const fastestFlip = withHold.length   ? withHold.reduce((a, b) => a.avg_holding_secs < b.avg_holding_secs ? a : b) : null;
+  const withRecent  = rows.filter(r => (r.trades_7d || 0) > 0);
+  const hottestCol  = withRecent.length ? withRecent.reduce((a, b) => (a.trades_7d || 0) > (b.trades_7d || 0) ? a : b) : null;
   const mostTraded  = rows.reduce((a, b) => a.total_trades > b.total_trades ? a : b);
 
   const spotlights = [
@@ -1385,15 +1387,15 @@ function renderMeta(rows) {
       sub: bestRoi ? `${bestRoi.matched_trades} round trip${bestRoi.matched_trades !== 1 ? 's' : ''}` : '',
     },
     {
-      icon: '⚡',
-      category: 'Fastest Flip',
-      row: fastestFlip,
-      val: fastestFlip ? fmtDays(fastestFlip.avg_holding_secs) : '—',
+      icon: '🔥',
+      category: 'Hottest Collection',
+      row: hottestCol,
+      val: hottestCol ? `${hottestCol.trades_7d} trades` : '—',
       valCls: '',
-      sub: fastestFlip ? `avg hold · ${fastestFlip.matched_trades} round trip${fastestFlip.matched_trades !== 1 ? 's' : ''}` : '',
+      sub: hottestCol ? 'last 7 days' : '',
     },
     {
-      icon: '🔥',
+      icon: '📊',
       category: 'Most Traded',
       row: mostTraded,
       val: mostTraded ? mostTraded.total_trades.toLocaleString() : '—',
@@ -1417,7 +1419,7 @@ function renderMeta(rows) {
 }
 
 function renderMetaTable(rows) {
-  // row layout: [name, total_trades, buys, sells, roi_pct, realized_pnl, avg_holding_secs, win_rate, open_positions, last_trade_ts, addr, fullData]
+  // row layout: [name, total_trades, buys, sells, roi_pct, realized_pnl, avg_holding_secs, win_rate, open_positions, last_trade_ts, first_trade_ts, addr, fullData]
   const tableRows = rows.map(r => [
     r.name.toLowerCase(),
     r.total_trades,
@@ -1429,6 +1431,7 @@ function renderMetaTable(rows) {
     r.win_rate,
     r.open_positions,
     r.last_trade_ts,
+    r.first_trade_ts,
     r.address,
     r,
   ]);
@@ -1449,7 +1452,7 @@ function renderMetaTable(rows) {
       <table id="tbl-meta">
         <thead><tr>
           ${makeHeaders('meta',
-            ['Collection','Trades','Buys','Sells','ROI %','PnL ETH','Avg Hold','Win Rate','Open','Last Trade'],
+            ['Collection','Trades','Buys','Sells','ROI %','PnL ETH','Avg Hold','Win Rate','Open','Last Trade','First Traded'],
             sortCol, sortDir)}
         </tr></thead>
         <tbody></tbody>
@@ -1460,7 +1463,7 @@ function renderMetaTable(rows) {
 }
 
 function renderMetaRow(row) {
-  const [,, buys, sells, roi_pct, pnl, avgHoldSecs, winRate, open, lastTs,, r] = row;
+  const [,, buys, sells, roi_pct, pnl, avgHoldSecs, winRate, open, lastTs, firstTs,, r] = row;
   const pnlCls  = pnl  > 0 ? 'pos' : pnl  < 0 ? 'neg' : '';
   const roiCls  = roi_pct > 0 ? 'pos' : roi_pct < 0 ? 'neg' : '';
   const winCls  = winRate >= 50 ? 'pos' : winRate > 0 ? '' : 'neg';
@@ -1476,6 +1479,7 @@ function renderMetaRow(row) {
     <td class="tc ${winCls}">${r.matched_trades > 0 ? winRate.toFixed(1) + '%' : '—'}</td>
     <td class="tc">${open}</td>
     <td class="tc" style="white-space:nowrap">${lastTs ? fmtDate(lastTs) : '—'}</td>
+    <td class="tc" style="white-space:nowrap">${firstTs ? fmtDate(firstTs) : '—'}</td>
   </tr>`;
 }
 
