@@ -536,6 +536,18 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
   <div id="dune-table-wrap"></div>
 </main>
 
+<!-- ── Collection detail view ── -->
+<main id="view-collection" style="display:none">
+  <div class="meta-page-hdr">
+    <h1 id="col-detail-name">Collection</h1>
+    <p id="col-detail-addr" style="font-size:12px;color:var(--muted);font-family:monospace"></p>
+  </div>
+  <div id="col-detail-loader" class="loader" style="display:none">
+    <div class="spinner"></div>
+  </div>
+  <div id="col-detail-table-wrap"></div>
+</main>
+
 <!-- ── Add/Sync modal ── -->
 <div id="m-add" class="moverlay" style="display:none" onclick="overlayClick(event,'m-add')">
   <div class="modal modal-sm" onclick="event.stopPropagation()">
@@ -623,6 +635,8 @@ function router() {
   const h = window.location.hash || '#/';
   if (h.startsWith('#/wallet/')) {
     loadDetail(h.slice(9));
+  } else if (h.startsWith('#/collection/')) {
+    loadCollection(h.slice(13));
   } else if (h === '#/meta') {
     loadMeta();
   } else if (h === '#/graph') {
@@ -651,6 +665,7 @@ async function loadHome() {
   document.getElementById('view-meta').style.display = 'none';
   document.getElementById('view-graph').style.display = 'none';
   document.getElementById('view-dune').style.display = 'none';
+  document.getElementById('view-collection').style.display = 'none';
   document.getElementById('btn-back').classList.add('hidden');
   setNavActive('wallets');
   currentWallet = null;
@@ -897,6 +912,7 @@ async function loadDetail(address) {
   document.getElementById('view-meta').style.display = 'none';
   document.getElementById('view-graph').style.display = 'none';
   document.getElementById('view-dune').style.display = 'none';
+  document.getElementById('view-collection').style.display = 'none';
   document.getElementById('btn-back').classList.remove('hidden');
   setNavActive('wallets');
 
@@ -1314,6 +1330,7 @@ async function loadMeta() {
   document.getElementById('view-meta').style.display = '';
   document.getElementById('view-graph').style.display = 'none';
   document.getElementById('view-dune').style.display = 'none';
+  document.getElementById('view-collection').style.display = 'none';
   document.getElementById('btn-back').classList.add('hidden');
   setNavActive('meta');
 
@@ -1467,7 +1484,7 @@ function renderMetaRow(row) {
   const pnlCls  = pnl  > 0 ? 'pos' : pnl  < 0 ? 'neg' : '';
   const roiCls  = roi_pct > 0 ? 'pos' : roi_pct < 0 ? 'neg' : '';
   const winCls  = winRate >= 50 ? 'pos' : winRate > 0 ? '' : 'neg';
-  return `<tr>
+  return `<tr class="clickable" onclick="navigate('/collection/${esc(r.address)}')">
     <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
         title="${esc(r.name)}">${esc(r.name)}</td>
     <td class="tc">${r.total_trades}</td>
@@ -1486,6 +1503,87 @@ function renderMetaRow(row) {
 function fmtRoi(pct) {
   if (pct == null) return '—';
   return (pct >= 0 ? '+' : '') + pct.toFixed(1) + '%';
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Collection detail view
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function loadCollection(addr) {
+  addr = addr.toLowerCase();
+  document.getElementById('view-home').style.display = 'none';
+  document.getElementById('view-detail').style.display = 'none';
+  document.getElementById('view-meta').style.display = 'none';
+  document.getElementById('view-graph').style.display = 'none';
+  document.getElementById('view-dune').style.display = 'none';
+  document.getElementById('view-collection').style.display = '';
+  document.getElementById('btn-back').classList.remove('hidden');
+  setNavActive('meta');
+
+  document.getElementById('col-detail-name').textContent = 'Loading…';
+  document.getElementById('col-detail-addr').textContent = addr;
+  document.getElementById('col-detail-table-wrap').innerHTML = '';
+  const loader = document.getElementById('col-detail-loader');
+  loader.style.display = '';
+
+  try {
+    const data = await fetch(`/api/collection/${addr}`).then(r => r.json());
+    loader.style.display = 'none';
+    document.getElementById('col-detail-name').textContent = data.collection_name;
+
+    const wallets = data.wallets || [];
+    if (!wallets.length) {
+      document.getElementById('col-detail-table-wrap').innerHTML = '<div class="no-data">No wallet data.</div>';
+      return;
+    }
+
+    // row: [trades, wallet_name_lc, buys, sells, pnl, roi_pct, firstTs, lastTs, w]
+    const rows = wallets.map(w => [
+      w.trades,
+      (w.wallet_name || w.wallet_address).toLowerCase(),
+      w.buys,
+      w.sells,
+      w.realized_pnl,
+      w.roi_pct,
+      w.first_trade_ts || 0,
+      w.last_trade_ts || 0,
+      w,
+    ]);
+
+    document.getElementById('col-detail-table-wrap').innerHTML = `
+      <div class="tbl-wrap">
+        <table id="tbl-col-detail">
+          <thead><tr>
+            ${makeHeaders('col-detail', ['Wallet','Trades','Buys','Sells','PnL ETH','ROI','First Traded','Last Traded'], 0, -1)}
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>`;
+
+    initTable('col-detail', rows, renderColDetailRow, 0, -1);
+  } catch(e) {
+    loader.style.display = 'none';
+    document.getElementById('col-detail-table-wrap').innerHTML = '<div class="no-data">Failed to load collection data.</div>';
+  }
+}
+
+function renderColDetailRow(row) {
+  const [trades,, buys, sells, pnl, roi_pct, firstTs, lastTs, w] = row;
+  const short = w.wallet_address ? w.wallet_address.slice(0,8) + '…' + w.wallet_address.slice(-4) : '';
+  const label = w.wallet_name || short;
+  const pnlCls = pnl > 0 ? 'pos' : pnl < 0 ? 'neg' : '';
+  const roiCls = roi_pct > 0 ? 'pos' : roi_pct < 0 ? 'neg' : '';
+  return `<tr class="clickable" onclick="navigate('/wallet/${esc(w.wallet_address)}')">
+    <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+        title="${esc(w.wallet_name || w.wallet_address)}">${esc(label)}</td>
+    <td class="tc">${trades}</td>
+    <td class="tc">${buys}</td>
+    <td class="tc">${sells}</td>
+    <td class="mono tr pnl-cell ${pnlCls}">${fmtPnl(pnl)}</td>
+    <td class="mono tr pnl-cell ${roiCls}">${fmtRoi(roi_pct)}</td>
+    <td class="tc mono">${firstTs ? fmtDate(firstTs) : '—'}</td>
+    <td class="tc mono">${lastTs ? fmtDate(lastTs) : '—'}</td>
+  </tr>`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1800,6 +1898,7 @@ async function loadGraph() {
   document.getElementById('view-meta').style.display   = 'none';
   document.getElementById('view-graph').style.display  = '';
   document.getElementById('view-dune').style.display   = 'none';
+  document.getElementById('view-collection').style.display = 'none';
   document.getElementById('btn-back').classList.add('hidden');
   setNavActive('graph');
 
@@ -2159,6 +2258,7 @@ async function loadDune() {
   document.getElementById('view-meta').style.display   = 'none';
   document.getElementById('view-graph').style.display  = 'none';
   document.getElementById('view-dune').style.display   = '';
+  document.getElementById('view-collection').style.display = 'none';
   document.getElementById('btn-back').classList.add('hidden');
   setNavActive('traders');
 

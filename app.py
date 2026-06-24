@@ -420,6 +420,53 @@ def api_meta():
     return jsonify(rows)
 
 
+# ── API: collection detail (per-wallet breakdown for one collection) ───────────
+
+@app.route("/api/collection/<address>")
+def api_collection_detail(address):
+    address = address.lower()
+    db.init_db()
+    with db.get_conn() as conn:
+        wallets = [r[0] for r in conn.execute(
+            "SELECT DISTINCT wallet_address FROM trades WHERE collection_address = ?",
+            (address,)
+        ).fetchall()]
+        col_row = conn.execute(
+            "SELECT name, slug FROM collections WHERE contract_address = ?",
+            (address,)
+        ).fetchone()
+
+    col_name = (col_row["name"] or col_row["slug"] if col_row else None) or address[:10] + "..."
+
+    rows = []
+    for wallet in wallets:
+        with db.get_conn() as conn:
+            trades = db.get_trades(conn, wallet)
+            wallet_row = db.get_wallet(conn, wallet)
+        if not trades:
+            continue
+        result = analytics.compute_analytics(trades)
+        s = result["per_collection"].get(address)
+        if not s:
+            continue
+        total_trades = s["buys"] + s["sells"]
+        roi = s["roi"] * 100 if s.get("roi") is not None else None
+        rows.append({
+            "wallet_address": wallet,
+            "wallet_name": wallet_row["name"] if wallet_row else None,
+            "trades": total_trades,
+            "buys": s["buys"],
+            "sells": s["sells"],
+            "realized_pnl": round(s["realized_pnl"], 4),
+            "roi_pct": round(roi, 2) if roi is not None else None,
+            "first_trade_ts": s.get("first_trade_ts"),
+            "last_trade_ts": s.get("last_trade_ts") or 0,
+        })
+
+    rows.sort(key=lambda r: r["trades"], reverse=True)
+    return jsonify({"collection_address": address, "collection_name": col_name, "wallets": rows})
+
+
 # ── API: collections list (for graph picker) ───────────────────────────────────
 
 @app.route("/api/collections")
