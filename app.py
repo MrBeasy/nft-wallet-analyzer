@@ -159,7 +159,7 @@ def api_pnl_buckets(address):
 
     now = int(_time.time())
     range_days = (now - since) / 86400 if since else 99999
-    if range_days > 91:
+    if range_days > 60:
         bucket_type = "monthly"
     else:
         bucket_type = "daily"
@@ -522,7 +522,7 @@ def api_collection_pnl_buckets(address):
 
     now = int(_time.time())
     range_days = (now - since) / 86400 if since else 99999
-    bucket_type = "monthly" if range_days > 91 else "daily"
+    bucket_type = "monthly" if range_days > 60 else "daily"
 
     buckets_map = {}
     for wallet in wallets:
