@@ -414,6 +414,7 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
         <button class="tab active" data-tab="collections" onclick="switchTab('collections',this)">Collections</button>
         <button class="tab" data-tab="open" onclick="switchTab('open',this)">Open Positions</button>
         <button class="tab" data-tab="trades" onclick="switchTab('trades',this)">All Trades</button>
+        <button class="tab" data-tab="pnl" onclick="switchTab('pnl',this)">PnL Chart</button>
       </div>
     </div>
 
@@ -422,6 +423,11 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
     <div id="pane-trades" class="tab-pane">
       <div id="trades-loader" class="loader"><div class="spinner"></div></div>
       <div id="trades-inner" style="display:none"></div>
+    </div>
+    <div id="pane-pnl" class="tab-pane" style="position:relative">
+      <div id="pnl-loader" class="loader"><div class="spinner"></div></div>
+      <div id="pnl-inner" style="display:none"></div>
+      <div id="pnl-tooltip" class="graph-tooltip hidden"></div>
     </div>
   </div>
 </main>
@@ -615,6 +621,8 @@ let syncTarget = null;
 let syncAutoNavigate = false;
 let reportCache = {};
 let tradesLoaded = false;
+let pnlChartLoaded = false;
+const pnlCache = {};
 let detailDays = 0; // 0 = all time; cache key = address + ':' + days
 let homeViewMode = 'grid'; // 'grid' | 'table'
 let walletCache = null;
@@ -904,6 +912,7 @@ async function loadDetail(address) {
   const isNewWallet = currentWallet !== address;
   currentWallet = address;
   tradesLoaded = false;
+  pnlChartLoaded = false;
 
   if (isNewWallet) detailDays = 0;
 
@@ -927,6 +936,8 @@ async function loadDetail(address) {
   document.getElementById('pane-collections').classList.add('active');
   document.getElementById('trades-loader').style.display = '';
   document.getElementById('trades-inner').style.display = 'none';
+  document.getElementById('pnl-loader').style.display = '';
+  document.getElementById('pnl-inner').style.display = 'none';
 
   const loader = document.getElementById('d-loader');
   const content = document.getElementById('d-content');
@@ -967,21 +978,29 @@ function setDetailFilter(days) {
   document.querySelectorAll('.fbtn').forEach(b =>
     b.classList.toggle('active', parseInt(b.dataset.days) === days));
   tradesLoaded = false;
+  pnlChartLoaded = false;
   // If trades tab is active, reload it with new filter
   if (document.getElementById('pane-trades').classList.contains('active')) {
     document.getElementById('trades-loader').style.display = '';
     document.getElementById('trades-inner').style.display = 'none';
   }
+  // If pnl tab is active, reload it with new filter
+  if (document.getElementById('pane-pnl').classList.contains('active')) {
+    document.getElementById('pnl-loader').style.display = '';
+    document.getElementById('pnl-inner').style.display = 'none';
+  }
   const cacheKey = currentWallet + ':' + days;
   if (reportCache[cacheKey]) {
     renderDetail(reportCache[cacheKey]);
     if (document.getElementById('pane-trades').classList.contains('active')) loadTradesPane();
+    if (document.getElementById('pane-pnl').classList.contains('active')) loadPnlPane();
     return;
   }
   document.getElementById('d-loader').style.display = '';
   document.getElementById('d-content').style.display = 'none';
   fetchAndRenderDetail(currentWallet, days).then(() => {
     if (document.getElementById('pane-trades').classList.contains('active')) loadTradesPane();
+    if (document.getElementById('pane-pnl').classList.contains('active')) loadPnlPane();
   });
 }
 
@@ -1181,6 +1200,129 @@ async function loadTradesPane() {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// PnL Chart tab
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function loadPnlPane() {
+  if (pnlChartLoaded) return;
+  pnlChartLoaded = true;
+  const addr = currentWallet, days = detailDays;
+  const cacheKey = addr + ':' + days;
+  document.getElementById('pnl-loader').style.display = '';
+  document.getElementById('pnl-inner').style.display = 'none';
+  if (pnlCache[cacheKey]) { renderPnlChart(pnlCache[cacheKey]); return; }
+  const since = days ? Math.floor(Date.now() / 1000) - days * 86400 : 0;
+  const url = `/api/pnl_buckets/${addr}${since ? '?since=' + since : ''}`;
+  try {
+    const data = await fetch(url).then(r => r.json());
+    pnlCache[cacheKey] = data;
+    renderPnlChart(data);
+  } catch {
+    document.getElementById('pnl-loader').innerHTML =
+      '<p style="color:var(--muted);text-align:center">Failed to load chart.</p>';
+  }
+}
+
+function renderPnlChart(data) {
+  const loader = document.getElementById('pnl-loader');
+  const inner = document.getElementById('pnl-inner');
+  loader.style.display = 'none';
+  inner.style.display = '';
+
+  const buckets = data.buckets || [];
+  if (!buckets.length) {
+    inner.innerHTML = '<p style="color:var(--muted);text-align:center;padding:2.5rem 0">No realized PnL in this time range.</p>';
+    return;
+  }
+
+  // Layout constants
+  const W = 900, H = 300;
+  const PL = 72, PR = 20, PT = 24, PB = 54;
+  const plotW = W - PL - PR, plotH = H - PT - PB;
+  const y0 = PT + plotH / 2; // zero line
+
+  const N = buckets.length;
+  const barStep = plotW / N;
+  const barW = Math.min(36, barStep * 0.72);
+
+  const maxAbs = Math.max(...buckets.map(b => Math.abs(b.pnl_eth)), 0.0001);
+  const yS = (plotH / 2) / maxAbs;
+
+  // Y axis ticks (symmetric around 0)
+  const ticks = niceAxisTicks(-maxAbs, maxAbs, 7);
+
+  // Label every Nth bucket to avoid crowding (target ~12 labels max)
+  const labelEvery = Math.max(1, Math.ceil(N / 12));
+
+  let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block;overflow:visible">`;
+
+  // Grid lines + Y labels
+  ticks.forEach(v => {
+    const y = y0 - v * yS;
+    const lbl = v === 0 ? '0' : (v > 0 ? '+' : '') + v.toFixed(3);
+    s += `<line x1="${PL}" x2="${PL + plotW}" y1="${y}" y2="${y}" stroke="${v === 0 ? '#666' : 'var(--border)'}" stroke-width="${v === 0 ? 1.5 : 0.7}"/>`;
+    s += `<text x="${PL - 6}" y="${y + 4}" text-anchor="end" font-size="11" fill="var(--muted)">${lbl}</text>`;
+  });
+
+  // Bars
+  buckets.forEach((b, i) => {
+    const cx = PL + (i + 0.5) * barStep;
+    const bx = cx - barW / 2;
+    const pnl = b.pnl_eth;
+    const color = pnl >= 0 ? '#4ade80' : '#f87171';
+    let by, bh;
+    if (pnl >= 0) {
+      bh = Math.max(pnl * yS, 1);
+      by = y0 - bh;
+    } else {
+      bh = Math.max(Math.abs(pnl) * yS, 1);
+      by = y0;
+    }
+    s += `<rect x="${bx.toFixed(1)}" y="${by.toFixed(1)}" width="${barW.toFixed(1)}" height="${bh.toFixed(1)}" fill="${color}" rx="2" data-i="${i}"/>`;
+  });
+
+  // X labels (rotated)
+  buckets.forEach((b, i) => {
+    if (i % labelEvery !== 0 && i !== N - 1) return;
+    const cx = PL + (i + 0.5) * barStep;
+    s += `<text x="${cx.toFixed(1)}" y="${PT + plotH + 16}" text-anchor="end" font-size="11" fill="var(--muted)" transform="rotate(-38,${cx.toFixed(1)},${PT + plotH + 16})">${b.label}</text>`;
+  });
+
+  // Invisible hit-targets for each bar (full column height for easy hover)
+  buckets.forEach((b, i) => {
+    const bx = PL + i * barStep;
+    s += `<rect x="${bx.toFixed(1)}" y="${PT}" width="${barStep.toFixed(1)}" height="${plotH}" fill="transparent" data-i="${i}" class="pnl-hit"/>`;
+  });
+
+  s += '</svg>';
+  inner.innerHTML = s;
+
+  // Tooltip
+  const tooltip = document.getElementById('pnl-tooltip');
+  const svg = inner.querySelector('svg');
+  svg.addEventListener('pointermove', e => {
+    const rect = svg.getBoundingClientRect();
+    const mx = (e.clientX - rect.left) * (W / rect.width);
+    const idx = Math.floor((mx - PL) / barStep);
+    if (idx < 0 || idx >= N) { tooltip.classList.add('hidden'); return; }
+    const b = buckets[idx];
+    const pnlCls = b.pnl_eth >= 0 ? 'pos' : 'neg';
+    tooltip.innerHTML = `
+      <div style="font-weight:600;margin-bottom:4px">${b.label}</div>
+      <div class="${pnlCls}" style="font-family:var(--mono)">${fmtPnl(b.pnl_eth)}</div>
+      <div style="color:var(--muted);font-size:11px">${b.trade_count} trade${b.trade_count !== 1 ? 's' : ''}</div>`;
+    tooltip.classList.remove('hidden');
+    const paneRect = document.getElementById('pane-pnl').getBoundingClientRect();
+    let tx = e.clientX - paneRect.left + 14;
+    let ty = e.clientY - paneRect.top - 10;
+    if (tx + 180 > paneRect.width) tx = e.clientX - paneRect.left - 180;
+    tooltip.style.left = tx + 'px';
+    tooltip.style.top = ty + 'px';
+  });
+  svg.addEventListener('pointerleave', () => tooltip.classList.add('hidden'));
+}
+
 function renderTradesTable(containerId, tableId, trades) {
   const el = document.getElementById(containerId);
   if (!trades.length) { el.innerHTML = '<div class="no-data">No trades found.</div>'; return; }
@@ -1237,6 +1379,7 @@ function switchTab(name, btn) {
   document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
   document.getElementById('pane-' + name).classList.add('active');
   if (name === 'trades') loadTradesPane();
+  if (name === 'pnl') loadPnlPane();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

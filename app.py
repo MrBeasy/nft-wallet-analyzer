@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import time as _time
+from datetime import datetime, timezone as _tz
 
 import requests as _req
 from flask import Flask, Response, jsonify, render_template, request, stream_with_context
@@ -139,6 +140,52 @@ def api_trades(address):
                 ORDER BY t.block_timestamp DESC
             """, params).fetchall()
     return jsonify([dict(r) for r in rows])
+
+
+# ── API: PnL buckets ───────────────────────────────────────────────────────────
+
+@app.route("/api/pnl_buckets/<address>")
+def api_pnl_buckets(address):
+    address = address.lower()
+    since = request.args.get("since", type=int, default=0)
+    db.init_db()
+    with db.get_conn() as conn:
+        trades = db.get_trades(conn, address, since=since if since else None)
+    if not trades:
+        return jsonify({"buckets": [], "bucket_type": "monthly", "total_pnl_eth": 0})
+
+    result = analytics.compute_analytics(trades)
+    matched = result.get("matched_trades", [])
+
+    now = int(_time.time())
+    range_days = (now - since) / 86400 if since else 99999
+    if range_days > 180:
+        bucket_type = "monthly"
+    elif range_days > 8:
+        bucket_type = "weekly"
+    else:
+        bucket_type = "daily"
+
+    buckets_map = {}
+    for m in matched:
+        dt = datetime.fromtimestamp(m["sell_ts"], tz=_tz.utc)
+        if bucket_type == "monthly":
+            key = dt.strftime("%Y-%m")
+            label = dt.strftime("%b '") + dt.strftime("%y")
+        elif bucket_type == "weekly":
+            key = dt.strftime("%Y-W%W")
+            label = "W" + dt.strftime("%W '") + dt.strftime("%y")
+        else:
+            key = dt.strftime("%Y-%m-%d")
+            label = dt.strftime("%b ") + str(dt.day)
+        if key not in buckets_map:
+            buckets_map[key] = {"key": key, "label": label, "pnl_eth": 0.0, "trade_count": 0}
+        buckets_map[key]["pnl_eth"] += m["pnl_eth"]
+        buckets_map[key]["trade_count"] += 1
+
+    buckets = sorted(buckets_map.values(), key=lambda b: b["key"])
+    total_pnl = sum(b["pnl_eth"] for b in buckets)
+    return jsonify({"buckets": buckets, "bucket_type": bucket_type, "total_pnl_eth": total_pnl})
 
 
 # ── API: sync (streaming) ──────────────────────────────────────────────────────
