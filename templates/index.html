@@ -57,24 +57,6 @@ main{padding:24px;max-width:1280px;margin:0 auto}
 @keyframes spin{to{transform:rotate(360deg)}}
 .empty-icon{font-size:40px;color:var(--subtle)}
 
-/* ── Wallet grid ── */
-#wallet-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:16px}
-.wcard{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);
-  padding:20px;cursor:pointer;transition:all .15s;display:flex;flex-direction:column;gap:14px}
-.wcard:hover{border-color:var(--blue);background:var(--surface2);transform:translateY(-1px);
-  box-shadow:0 4px 16px rgba(0,0,0,.3)}
-.wcard-top{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
-.wcard-name{font-size:16px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.wcard-addr{font-family:var(--mono);font-size:11px;color:var(--muted)}
-.wcard-pnl{font-size:26px;font-weight:700;font-family:var(--mono);letter-spacing:-.5px}
-.wcard-pnl-lbl{font-size:11px;color:var(--muted);margin-top:2px}
-.wcard-stats{display:flex;gap:20px}
-.stat{display:flex;flex-direction:column;gap:2px}
-.stat-v{font-size:15px;font-weight:600}
-.stat-l{font-size:11px;color:var(--muted)}
-.wcard-foot{display:flex;align-items:center;justify-content:space-between;
-  padding-top:12px;border-top:1px solid var(--border2)}
-.wcard-sync{font-size:11px;color:var(--muted)}
 .pos{color:var(--green)}.neg{color:var(--red)}.zer{color:var(--muted)}
 
 /* ── Detail header ── */
@@ -303,14 +285,10 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
 <!-- ── Home view ── -->
 <main id="view-home">
   <div id="home-toolbar" style="display:none;margin-bottom:16px">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:10px">
-      <div class="filter-btns">
-        <button class="fbtn active" id="hv-grid"  onclick="setHomeView('grid')">Cards</button>
-        <button class="fbtn"        id="hv-table" onclick="setHomeView('table')">Table</button>
-      </div>
+    <div style="display:flex;align-items:center;justify-content:flex-end;margin-bottom:12px">
       <span id="wt-count" class="meta-count"></span>
     </div>
-    <div id="wt-filters" class="meta-filters" style="display:none">
+    <div id="wt-filters" class="meta-filters">
       <div class="mf-group">
         <label class="mf-lbl">Name</label>
         <input id="wf-name" class="mf-inp" type="text" placeholder="Search…" oninput="applyWalletFilters()">
@@ -365,7 +343,6 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
     </div>
   </div>
   <div id="home-loader" class="loader"><div class="spinner"></div></div>
-  <div id="wallet-grid" style="display:none"></div>
   <div id="wallet-table-wrap" style="display:none"></div>
   <div id="no-wallets" class="empty hidden">
     <div class="empty-icon">◈</div>
@@ -571,10 +548,6 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
           <label class="flbl">Wallet Address</label>
           <input id="f-addr" type="text" class="finp finp-mono" placeholder="0x..." autocomplete="off">
         </div>
-        <label class="fchk">
-          <input id="f-gas" type="checkbox">
-          <span>Fetch gas costs (slower, uses Etherscan quota)</span>
-        </label>
       </div>
       <div class="modal-foot">
         <button class="btn btn-primary btn-full" onclick="startSync()">Start Sync →</button>
@@ -624,7 +597,6 @@ let tradesLoaded = false;
 let pnlChartLoaded = false;
 const pnlCache = {};
 let detailDays = 0; // 0 = all time; cache key = address + ':' + days
-let homeViewMode = 'grid'; // 'grid' | 'table'
 let walletCache = null;
 
 // sortable table registry: tableId → { rows, sortCol, sortDir, renderRow }
@@ -679,12 +651,10 @@ async function loadHome() {
   currentWallet = null;
   tradesLoaded = false;
 
-  const grid = document.getElementById('wallet-grid');
   const loader = document.getElementById('home-loader');
   const noW = document.getElementById('no-wallets');
 
   loader.style.display = '';
-  grid.style.display = 'none';
   noW.classList.add('hidden');
 
   try {
@@ -692,69 +662,18 @@ async function loadHome() {
     loader.style.display = 'none';
     if (!wallets.length) { noW.classList.remove('hidden'); return; }
     walletCache = wallets;
-    grid.innerHTML = '';
-    wallets.forEach(w => grid.appendChild(walletCard(w)));
     renderWalletTable(wallets);
     document.getElementById('home-toolbar').style.display = '';
-    setHomeView(homeViewMode);
+    document.getElementById('wallet-table-wrap').style.display = '';
+    applyWalletFilters();
   } catch {
     loader.innerHTML = '<p style="color:var(--muted)">Failed to load wallets.</p>';
   }
 }
 
-function walletCard(w) {
-  const el = document.createElement('div');
-  el.className = 'wcard';
-  el.onclick = () => navigate(`/wallet/${w.address}`);
-
-  const pnl = w.realized_pnl_eth;
-  const pnlCls = pnl > 0 ? 'pos' : pnl < 0 ? 'neg' : 'zer';
-  const pnlTxt = pnl != null ? (pnl >= 0 ? '+' : '') + pnl.toFixed(4) + ' ETH' : '—';
-  const wr = w.win_rate != null ? (w.win_rate * 100).toFixed(1) + '%' : '—';
-  const roi = (w.realized_pnl_eth != null && w.total_buy_eth)
-    ? (w.realized_pnl_eth / w.total_buy_eth * 100).toFixed(1) + '%' : '—';
-  const roiCls = w.realized_pnl_eth > 0 ? 'pos' : w.realized_pnl_eth < 0 ? 'neg' : '';
-  const addr = w.address || '';
-  const short = addr ? addr.slice(0,8) + '...' + addr.slice(-4) : '';
-  const synced = w.last_synced_at
-    ? new Date(w.last_synced_at * 1000).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})
-    : 'Never synced';
-
-  el.innerHTML = `
-    <div class="wcard-top">
-      <span class="wcard-name">${esc(w.name || 'Unnamed Wallet')}</span>
-      <span class="wcard-addr">${esc(short)}</span>
-    </div>
-    <div>
-      <div class="wcard-pnl ${pnlCls}">${pnlTxt}</div>
-      <div class="wcard-pnl-lbl">Realized PnL</div>
-    </div>
-    <div class="wcard-stats">
-      <div class="stat"><span class="stat-v">${w.total_trades ?? '—'}</span><span class="stat-l">Trades</span></div>
-      <div class="stat"><span class="stat-v">${wr}</span><span class="stat-l">Win Rate</span></div>
-      <div class="stat"><span class="stat-v ${roiCls}">${roi}</span><span class="stat-l">ROI</span></div>
-    </div>
-    <div class="wcard-foot">
-      <span class="wcard-sync">Synced: ${esc(synced)}</span>
-      <span style="font-size:12px;color:var(--blue)">View →</span>
-    </div>`;
-  return el;
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Home — table view
 // ─────────────────────────────────────────────────────────────────────────────
-
-function setHomeView(mode) {
-  homeViewMode = mode;
-  const isTable = mode === 'table';
-  document.getElementById('wallet-grid').style.display        = isTable ? 'none' : '';
-  document.getElementById('wallet-table-wrap').style.display  = isTable ? ''     : 'none';
-  document.getElementById('wt-filters').style.display         = isTable ? ''     : 'none';
-  document.getElementById('hv-grid').classList.toggle('active',  !isTable);
-  document.getElementById('hv-table').classList.toggle('active', isTable);
-  if (isTable) applyWalletFilters();
-}
 
 function renderWalletTable(wallets) {
   const wrap = document.getElementById('wallet-table-wrap');
@@ -1735,14 +1654,13 @@ function renderColDetailRow(row) {
 
 function openAddModal() {
   syncTarget = null;
-  syncAutoNavigate = false;
+  syncAutoNavigate = true;
   document.getElementById('m-add-form').style.display = '';
   document.getElementById('m-add-progress').style.display = 'none';
   document.getElementById('prog-foot').style.display = 'none';
   document.getElementById('f-name').value = '';
   document.getElementById('f-addr').value = '';
   document.getElementById('f-addr').readOnly = false;
-  document.getElementById('f-gas').checked = false;
   document.getElementById('f-addr').classList.remove('err');
   document.getElementById('m-add').style.display = '';
   setTimeout(() => document.getElementById('f-name').focus(), 50);
@@ -1751,14 +1669,13 @@ function openAddModal() {
 function resync() {
   if (!currentWallet) return;
   syncTarget = currentWallet;
-  syncAutoNavigate = false;
+  syncAutoNavigate = true;
   document.getElementById('m-add-form').style.display = '';
   document.getElementById('m-add-progress').style.display = 'none';
   document.getElementById('prog-foot').style.display = 'none';
   document.getElementById('f-name').value = '';
   document.getElementById('f-addr').value = currentWallet;
   document.getElementById('f-addr').readOnly = true;
-  document.getElementById('f-gas').checked = false;
   document.getElementById('f-addr').classList.remove('err');
   document.getElementById('m-add').style.display = '';
 }
@@ -1777,7 +1694,6 @@ async function startSync() {
   addrEl.title = '';
 
   const name = document.getElementById('f-name').value.trim();
-  const gas = document.getElementById('f-gas').checked;
   syncTarget = address.toLowerCase();
 
   document.getElementById('m-add-form').style.display = 'none';
@@ -1786,15 +1702,15 @@ async function startSync() {
   document.getElementById('prog-title').innerHTML = 'Syncing<span id="prog-dots">...</span>';
   document.getElementById('prog-foot').style.display = 'none';
 
-  await runSync(address, name, gas);
+  await runSync(address, name);
 }
 
-async function runSync(address, name, gas) {
+async function runSync(address, name) {
   try {
     const res = await fetch('/api/sync', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ address, name, gas }),
+      body: JSON.stringify({ address, name }),
     });
     if (!res.ok) {
       appendLog('HTTP ' + res.status, 'err');
