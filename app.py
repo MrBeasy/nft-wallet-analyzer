@@ -512,6 +512,7 @@ def api_collection_detail(address):
 @app.route("/api/collection_pnl_buckets/<address>")
 def api_collection_pnl_buckets(address):
     address = address.lower()
+    since = request.args.get("since", type=int, default=0)
     db.init_db()
     with db.get_conn() as conn:
         wallets = [r[0] for r in conn.execute(
@@ -519,10 +520,14 @@ def api_collection_pnl_buckets(address):
             (address,)
         ).fetchall()]
 
+    now = int(_time.time())
+    range_days = (now - since) / 86400 if since else 99999
+    bucket_type = "monthly" if range_days > 91 else "daily"
+
     buckets_map = {}
     for wallet in wallets:
         with db.get_conn() as conn:
-            trades = db.get_trades(conn, wallet)
+            trades = db.get_trades(conn, wallet, since=since if since else None)
         if not trades:
             continue
         result = analytics.compute_analytics(trades)
@@ -530,8 +535,12 @@ def api_collection_pnl_buckets(address):
             if m["collection_address"] != address:
                 continue
             dt = datetime.fromtimestamp(m["sell_ts"], tz=_tz.utc)
-            key = dt.strftime("%Y-%m")
-            label = dt.strftime("%b '") + dt.strftime("%y")
+            if bucket_type == "monthly":
+                key = dt.strftime("%Y-%m")
+                label = dt.strftime("%b '") + dt.strftime("%y")
+            else:
+                key = dt.strftime("%Y-%m-%d")
+                label = dt.strftime("%b ") + str(dt.day)
             if key not in buckets_map:
                 buckets_map[key] = {"key": key, "label": label, "pnl_eth": 0.0, "trade_count": 0}
             buckets_map[key]["pnl_eth"] += m["pnl_eth"]
@@ -539,7 +548,7 @@ def api_collection_pnl_buckets(address):
 
     buckets = sorted(buckets_map.values(), key=lambda b: b["key"])
     total_pnl = sum(b["pnl_eth"] for b in buckets)
-    return jsonify({"buckets": buckets, "bucket_type": "monthly", "total_pnl_eth": total_pnl})
+    return jsonify({"buckets": buckets, "bucket_type": bucket_type, "total_pnl_eth": total_pnl})
 
 
 # ── API: collections list (for graph picker) ───────────────────────────────────

@@ -529,6 +529,15 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
     <div class="spinner"></div>
   </div>
   <div id="col-detail-content" style="display:none">
+    <div class="d-filter-bar">
+      <div class="filter-btns">
+        <button class="fbtn active" data-coldays="0"   onclick="setColDetailFilter(0)">All Time</button>
+        <button class="fbtn"        data-coldays="7"   onclick="setColDetailFilter(7)">7d</button>
+        <button class="fbtn"        data-coldays="30"  onclick="setColDetailFilter(30)">30d</button>
+        <button class="fbtn"        data-coldays="90"  onclick="setColDetailFilter(90)">90d</button>
+        <button class="fbtn"        data-coldays="365" onclick="setColDetailFilter(365)">1y</button>
+      </div>
+    </div>
     <div class="tabs-wrap">
       <div class="tabs">
         <button class="tab active" data-tab="col-wallets" onclick="switchTab('col-wallets',this)">Wallets</button>
@@ -613,6 +622,7 @@ let pnlChartLoaded = false;
 const pnlCache = {};
 let colPnlLoaded = false;
 const colPnlCache = {};
+let colDetailDays = 0;
 let detailDays = 0; // 0 = all time; cache key = address + ':' + days
 let walletCache = null;
 
@@ -940,6 +950,19 @@ function setDetailFilter(days) {
   });
 }
 
+function setColDetailFilter(days) {
+  if (colDetailDays === days) return;
+  colDetailDays = days;
+  document.querySelectorAll('[data-coldays]').forEach(b =>
+    b.classList.toggle('active', parseInt(b.dataset.coldays) === days));
+  colPnlLoaded = false;
+  if (document.getElementById('pane-col-pnl').classList.contains('active')) {
+    document.getElementById('col-pnl-loader').style.display = '';
+    document.getElementById('col-pnl-inner').style.display = 'none';
+    loadColPnlPane();
+  }
+}
+
 function renderDetail(data) {
   document.getElementById('d-loader').style.display = 'none';
   document.getElementById('d-content').style.display = '';
@@ -1163,14 +1186,18 @@ async function loadPnlPane() {
 async function loadColPnlPane() {
   if (colPnlLoaded) return;
   colPnlLoaded = true;
-  const addr = currentCollection;
-  if (colPnlCache[addr]) { renderPnlChart(colPnlCache[addr], { loaderId: 'col-pnl-loader', innerId: 'col-pnl-inner', tooltipId: 'col-pnl-tooltip', paneId: 'pane-col-pnl' }); return; }
+  const addr = currentCollection, days = colDetailDays;
+  const cacheKey = addr + ':' + days;
+  const colOpts = { loaderId: 'col-pnl-loader', innerId: 'col-pnl-inner', tooltipId: 'col-pnl-tooltip', paneId: 'pane-col-pnl' };
   document.getElementById('col-pnl-loader').style.display = '';
   document.getElementById('col-pnl-inner').style.display = 'none';
+  if (colPnlCache[cacheKey]) { renderPnlChart(colPnlCache[cacheKey], colOpts); return; }
+  const since = days ? Math.floor(Date.now() / 1000) - days * 86400 : 0;
+  const url = `/api/collection_pnl_buckets/${addr}${since ? '?since=' + since : ''}`;
   try {
-    const data = await fetch(`/api/collection_pnl_buckets/${addr}`).then(r => r.json());
-    colPnlCache[addr] = data;
-    renderPnlChart(data, { loaderId: 'col-pnl-loader', innerId: 'col-pnl-inner', tooltipId: 'col-pnl-tooltip', paneId: 'pane-col-pnl' });
+    const data = await fetch(url).then(r => r.json());
+    colPnlCache[cacheKey] = data;
+    renderPnlChart(data, colOpts);
   } catch {
     document.getElementById('col-pnl-loader').innerHTML =
       '<p style="color:var(--muted);text-align:center">Failed to load chart.</p>';
@@ -1612,6 +1639,7 @@ async function loadCollection(addr) {
   addr = addr.toLowerCase();
   currentCollection = addr;
   colPnlLoaded = false;
+  colDetailDays = 0;
   document.getElementById('view-home').style.display = 'none';
   document.getElementById('view-detail').style.display = 'none';
   document.getElementById('view-meta').style.display = 'none';
@@ -1625,6 +1653,9 @@ async function loadCollection(addr) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.querySelector('[data-tab="col-wallets"]').classList.add('active');
   document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+  // Sync collection filter buttons
+  document.querySelectorAll('[data-coldays]').forEach(b =>
+    b.classList.toggle('active', parseInt(b.dataset.coldays) === 0));
   document.getElementById('pane-col-wallets').classList.add('active');
 
   document.getElementById('col-detail-name').textContent = 'Loading…';
