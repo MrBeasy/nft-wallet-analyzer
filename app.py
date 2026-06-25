@@ -159,10 +159,8 @@ def api_pnl_buckets(address):
 
     now = int(_time.time())
     range_days = (now - since) / 86400 if since else 99999
-    if range_days > 180:
+    if range_days > 91:
         bucket_type = "monthly"
-    elif range_days > 8:
-        bucket_type = "weekly"
     else:
         bucket_type = "daily"
 
@@ -172,9 +170,6 @@ def api_pnl_buckets(address):
         if bucket_type == "monthly":
             key = dt.strftime("%Y-%m")
             label = dt.strftime("%b '") + dt.strftime("%y")
-        elif bucket_type == "weekly":
-            key = dt.strftime("%Y-W%W")
-            label = "W" + dt.strftime("%W '") + dt.strftime("%y")
         else:
             key = dt.strftime("%Y-%m-%d")
             label = dt.strftime("%b ") + str(dt.day)
