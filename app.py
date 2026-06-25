@@ -509,6 +509,39 @@ def api_collection_detail(address):
     return jsonify({"collection_address": address, "collection_name": col_name, "wallets": rows})
 
 
+@app.route("/api/collection_pnl_buckets/<address>")
+def api_collection_pnl_buckets(address):
+    address = address.lower()
+    db.init_db()
+    with db.get_conn() as conn:
+        wallets = [r[0] for r in conn.execute(
+            "SELECT DISTINCT wallet_address FROM trades WHERE collection_address = ?",
+            (address,)
+        ).fetchall()]
+
+    buckets_map = {}
+    for wallet in wallets:
+        with db.get_conn() as conn:
+            trades = db.get_trades(conn, wallet)
+        if not trades:
+            continue
+        result = analytics.compute_analytics(trades)
+        for m in result.get("matched_trades", []):
+            if m["collection_address"] != address:
+                continue
+            dt = datetime.fromtimestamp(m["sell_ts"], tz=_tz.utc)
+            key = dt.strftime("%Y-%m")
+            label = dt.strftime("%b '") + dt.strftime("%y")
+            if key not in buckets_map:
+                buckets_map[key] = {"key": key, "label": label, "pnl_eth": 0.0, "trade_count": 0}
+            buckets_map[key]["pnl_eth"] += m["pnl_eth"]
+            buckets_map[key]["trade_count"] += 1
+
+    buckets = sorted(buckets_map.values(), key=lambda b: b["key"])
+    total_pnl = sum(b["pnl_eth"] for b in buckets)
+    return jsonify({"buckets": buckets, "bucket_type": "monthly", "total_pnl_eth": total_pnl})
+
+
 # ── API: collections list (for graph picker) ───────────────────────────────────
 
 @app.route("/api/collections")

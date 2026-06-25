@@ -528,7 +528,22 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
   <div id="col-detail-loader" class="loader" style="display:none">
     <div class="spinner"></div>
   </div>
-  <div id="col-detail-table-wrap"></div>
+  <div id="col-detail-content" style="display:none">
+    <div class="tabs-wrap">
+      <div class="tabs">
+        <button class="tab active" data-tab="col-wallets" onclick="switchTab('col-wallets',this)">Wallets</button>
+        <button class="tab" data-tab="col-pnl" onclick="switchTab('col-pnl',this)">PnL Chart</button>
+      </div>
+    </div>
+    <div id="pane-col-wallets" class="tab-pane active">
+      <div id="col-detail-table-wrap"></div>
+    </div>
+    <div id="pane-col-pnl" class="tab-pane" style="position:relative">
+      <div id="col-pnl-loader" class="loader"><div class="spinner"></div></div>
+      <div id="col-pnl-inner" style="display:none"></div>
+      <div id="col-pnl-tooltip" class="graph-tooltip hidden"></div>
+    </div>
+  </div>
 </main>
 
 <!-- ── Add/Sync modal ── -->
@@ -596,6 +611,8 @@ let reportCache = {};
 let tradesLoaded = false;
 let pnlChartLoaded = false;
 const pnlCache = {};
+let colPnlLoaded = false;
+const colPnlCache = {};
 let detailDays = 0; // 0 = all time; cache key = address + ':' + days
 let walletCache = null;
 
@@ -1143,9 +1160,26 @@ async function loadPnlPane() {
   }
 }
 
-function renderPnlChart(data) {
-  const loader = document.getElementById('pnl-loader');
-  const inner = document.getElementById('pnl-inner');
+async function loadColPnlPane() {
+  if (colPnlLoaded) return;
+  colPnlLoaded = true;
+  const addr = currentCollection;
+  if (colPnlCache[addr]) { renderPnlChart(colPnlCache[addr], { loaderId: 'col-pnl-loader', innerId: 'col-pnl-inner', tooltipId: 'col-pnl-tooltip', paneId: 'pane-col-pnl' }); return; }
+  document.getElementById('col-pnl-loader').style.display = '';
+  document.getElementById('col-pnl-inner').style.display = 'none';
+  try {
+    const data = await fetch(`/api/collection_pnl_buckets/${addr}`).then(r => r.json());
+    colPnlCache[addr] = data;
+    renderPnlChart(data, { loaderId: 'col-pnl-loader', innerId: 'col-pnl-inner', tooltipId: 'col-pnl-tooltip', paneId: 'pane-col-pnl' });
+  } catch {
+    document.getElementById('col-pnl-loader').innerHTML =
+      '<p style="color:var(--muted);text-align:center">Failed to load chart.</p>';
+  }
+}
+
+function renderPnlChart(data, { loaderId = 'pnl-loader', innerId = 'pnl-inner', tooltipId = 'pnl-tooltip', paneId = 'pane-pnl' } = {}) {
+  const loader = document.getElementById(loaderId);
+  const inner = document.getElementById(innerId);
   loader.style.display = 'none';
   inner.style.display = '';
 
@@ -1218,7 +1252,7 @@ function renderPnlChart(data) {
   inner.innerHTML = s;
 
   // Tooltip
-  const tooltip = document.getElementById('pnl-tooltip');
+  const tooltip = document.getElementById(tooltipId);
   const svg = inner.querySelector('svg');
   svg.addEventListener('pointermove', e => {
     const rect = svg.getBoundingClientRect();
@@ -1232,7 +1266,7 @@ function renderPnlChart(data) {
       <div class="${pnlCls}" style="font-family:var(--mono)">${fmtPnl(b.pnl_eth)}</div>
       <div style="color:var(--muted);font-size:11px">${b.trade_count} trade${b.trade_count !== 1 ? 's' : ''}</div>`;
     tooltip.classList.remove('hidden');
-    const paneRect = document.getElementById('pane-pnl').getBoundingClientRect();
+    const paneRect = document.getElementById(paneId).getBoundingClientRect();
     let tx = e.clientX - paneRect.left + 14;
     let ty = e.clientY - paneRect.top - 10;
     if (tx + 180 > paneRect.width) tx = e.clientX - paneRect.left - 180;
@@ -1299,6 +1333,7 @@ function switchTab(name, btn) {
   document.getElementById('pane-' + name).classList.add('active');
   if (name === 'trades') loadTradesPane();
   if (name === 'pnl') loadPnlPane();
+  if (name === 'col-pnl') loadColPnlPane();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1571,8 +1606,12 @@ function fmtRoi(pct) {
 // Collection detail view
 // ─────────────────────────────────────────────────────────────────────────────
 
+let currentCollection = null;
+
 async function loadCollection(addr) {
   addr = addr.toLowerCase();
+  currentCollection = addr;
+  colPnlLoaded = false;
   document.getElementById('view-home').style.display = 'none';
   document.getElementById('view-detail').style.display = 'none';
   document.getElementById('view-meta').style.display = 'none';
@@ -1582,9 +1621,16 @@ async function loadCollection(addr) {
   document.getElementById('btn-back').classList.remove('hidden');
   setNavActive('meta');
 
+  // Reset tabs to Wallets
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelector('[data-tab="col-wallets"]').classList.add('active');
+  document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+  document.getElementById('pane-col-wallets').classList.add('active');
+
   document.getElementById('col-detail-name').textContent = 'Loading…';
   document.getElementById('col-detail-addr').textContent = addr;
   document.getElementById('col-detail-table-wrap').innerHTML = '';
+  document.getElementById('col-detail-content').style.display = 'none';
   const loader = document.getElementById('col-detail-loader');
   loader.style.display = '';
 
@@ -1592,6 +1638,7 @@ async function loadCollection(addr) {
     const data = await fetch(`/api/collection/${addr}`).then(r => r.json());
     loader.style.display = 'none';
     document.getElementById('col-detail-name').textContent = data.collection_name;
+    document.getElementById('col-detail-content').style.display = '';
 
     const wallets = data.wallets || [];
     if (!wallets.length) {
@@ -1625,6 +1672,8 @@ async function loadCollection(addr) {
     initTable('col-detail', rows, renderColDetailRow, 0, -1);
   } catch(e) {
     loader.style.display = 'none';
+    loader.style.display = 'none';
+    document.getElementById('col-detail-content').style.display = '';
     document.getElementById('col-detail-table-wrap').innerHTML = '<div class="no-data">Failed to load collection data.</div>';
   }
 }
