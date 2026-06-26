@@ -384,6 +384,7 @@ def api_meta():
         "holding_times": [], "open_positions": 0, "total_fee_bps": 0,
         "wins": 0, "losses": 0,
         "first_trade_ts": None,
+        "wallets": set(),
     })
 
     for wallet in all_wallets:
@@ -408,6 +409,7 @@ def api_meta():
             m["total_fee_bps"] = s["total_fee_bps"]
             m["wins"] += s.get("wins", 0)
             m["losses"] += s.get("losses", 0)
+            m["wallets"].add(wallet)
             ft = s.get("first_trade_ts")
             if ft and (m["first_trade_ts"] is None or ft < m["first_trade_ts"]):
                 m["first_trade_ts"] = ft
@@ -456,6 +458,7 @@ def api_meta():
             "last_trade_ts": last_ts_map.get(addr),
             "first_trade_ts": s.get("first_trade_ts") or first_ts_map.get(addr),
             "trades_7d": trades_7d_map.get(addr, 0),
+            "wallets": list(s["wallets"]),
         })
 
     rows.sort(key=lambda r: r["roi_pct"], reverse=True)

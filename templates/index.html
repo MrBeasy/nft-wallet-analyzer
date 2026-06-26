@@ -419,6 +419,10 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
   <div id="meta-content" style="display:none">
     <div id="meta-spotlights" class="spotlight-grid"></div>
     <div class="meta-filters">
+      <div class="mf-group" style="flex:1;min-width:180px">
+        <label class="mf-lbl">Search</label>
+        <input id="mf-search" class="mf-inp" type="text" placeholder="Collection name or wallet…" oninput="applyMetaFilters()" style="width:100%">
+      </div>
       <div class="mf-group">
         <label class="mf-lbl">Min PnL (ETH)</label>
         <input id="mf-pnl" class="mf-inp" type="number" step="0.01" placeholder="e.g. 0.1" oninput="applyMetaFilters()">
@@ -1481,6 +1485,7 @@ async function loadMeta() {
 
 function applyMetaFilters() {
   if (!metaCache) return;
+  const search    = document.getElementById('mf-search').value.trim().toLowerCase();
   const minPnl    = parseFloat(document.getElementById('mf-pnl').value);
   const minTrades = parseInt(document.getElementById('mf-trades').value);
   const minHold   = parseFloat(document.getElementById('mf-hold').value);
@@ -1489,6 +1494,11 @@ function applyMetaFilters() {
   const afterTs   = afterDate ? Date.parse(afterDate) / 1000 : NaN;
 
   const filtered = metaCache.filter(r => {
+    if (search) {
+      const nameMatch = (r.name || '').toLowerCase().includes(search);
+      const walletMatch = (r.wallets || []).some(w => w.toLowerCase().includes(search));
+      if (!nameMatch && !walletMatch) return false;
+    }
     if (!isNaN(minPnl)    && r.realized_pnl < minPnl) return false;
     if (!isNaN(minTrades) && r.total_trades < minTrades) return false;
     if (!isNaN(minHold)   && (r.avg_holding_secs == null || r.avg_holding_secs / 86400 < minHold)) return false;
@@ -1505,7 +1515,7 @@ function applyMetaFilters() {
 }
 
 function resetMetaFilters() {
-  ['mf-pnl','mf-trades','mf-hold','mf-wr','mf-date'].forEach(id => document.getElementById(id).value = '');
+  ['mf-search','mf-pnl','mf-trades','mf-hold','mf-wr','mf-date'].forEach(id => document.getElementById(id).value = '');
   applyMetaFilters();
 }
 
