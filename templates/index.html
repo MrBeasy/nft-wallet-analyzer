@@ -258,6 +258,16 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
 .graph-page-hdr h1{font-size:22px;font-weight:700;letter-spacing:-.4px;margin-bottom:4px}
 .graph-page-hdr p{font-size:13px;color:var(--muted)}
 .graph-hint{font-size:12px;color:var(--subtle);padding:6px 2px}
+
+/* ── Benchmark view ── */
+.wallet-chip{display:inline-flex;align-items:center;padding:4px 12px;
+  background:var(--surface);border:1px solid var(--border);border-radius:14px;
+  font-size:12px;cursor:pointer;transition:all .15s;color:var(--muted);font-family:var(--mono)}
+.wallet-chip:hover{border-color:var(--blue);color:var(--text)}
+.bm-cmp{display:flex;flex-direction:column;gap:5px;margin-top:6px}
+.bm-row{display:flex;align-items:baseline;justify-content:space-between;gap:6px}
+.bm-lbl{font-size:10px;color:var(--subtle);text-transform:uppercase;letter-spacing:.4px;flex-shrink:0}
+.bm-val{font-size:15px;font-weight:700;font-family:var(--mono);letter-spacing:-.2px}
 </style>
 </head>
 <body>
@@ -275,6 +285,7 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
       <button class="nav-btn" id="nav-meta" onclick="navigate('/meta')">Collections</button>
       <button class="nav-btn" id="nav-graph" onclick="navigate('/graph')">Graph</button>
       <button class="nav-btn" id="nav-traders" onclick="navigate('/traders')">OS Traders</button>
+      <button class="nav-btn" id="nav-benchmark" onclick="navigate('/benchmark')">Benchmark</button>
     </nav>
   </div>
   <div>
@@ -559,6 +570,40 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
   </div>
 </main>
 
+<!-- ── Benchmark view ── -->
+<main id="view-benchmark" style="display:none">
+  <div class="meta-page-hdr">
+    <h1>Benchmark</h1>
+    <p>Compare a wallet's performance against all other tracked wallets in shared collections</p>
+  </div>
+  <div class="meta-filters" style="align-items:flex-end">
+    <div class="mf-group" style="flex:1;min-width:240px">
+      <label class="mf-lbl">Wallet Address</label>
+      <input id="bm-addr" class="mf-inp finp-mono" type="text" placeholder="0x..." autocomplete="off"
+        onkeydown="if(event.key==='Enter')runBenchmark()">
+    </div>
+    <div class="mf-group">
+      <label class="mf-lbl">Timeframe</label>
+      <div class="filter-btns">
+        <button class="fbtn active" data-bm-days="0"   onclick="setBenchmarkDays(0)">All Time</button>
+        <button class="fbtn"        data-bm-days="30"  onclick="setBenchmarkDays(30)">30d</button>
+        <button class="fbtn"        data-bm-days="90"  onclick="setBenchmarkDays(90)">90d</button>
+        <button class="fbtn"        data-bm-days="365" onclick="setBenchmarkDays(365)">1y</button>
+      </div>
+    </div>
+    <div>
+      <button id="bm-run-btn" class="btn btn-primary" onclick="runBenchmark()">Compare</button>
+    </div>
+    <span id="bm-status" style="font-size:12px;color:var(--muted);padding:0 4px"></span>
+  </div>
+  <div id="bm-wallet-chips" style="margin:12px 0;display:flex;flex-wrap:wrap;gap:8px"></div>
+  <div id="bm-loader" class="loader" style="display:none"><div class="spinner"></div></div>
+  <div id="bm-results" style="display:none">
+    <div id="bm-summary" class="sum-grid" style="margin-bottom:24px"></div>
+    <div id="bm-table-wrap"></div>
+  </div>
+</main>
+
 <!-- ── Add/Sync modal ── -->
 <div id="m-add" class="moverlay" style="display:none" onclick="overlayClick(event,'m-add')">
   <div class="modal modal-sm" onclick="event.stopPropagation()">
@@ -633,6 +678,9 @@ let walletCache = null;
 // sortable table registry: tableId → { rows, sortCol, sortDir, renderRow }
 const tbls = {};
 
+let benchmarkDays = 0;
+let benchmarkCache = null;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Router (hash-based SPA)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -654,6 +702,8 @@ function router() {
     loadGraph();
   } else if (h === '#/traders') {
     loadDune();
+  } else if (h === '#/benchmark') {
+    loadBenchmark();
   } else {
     loadHome();
   }
@@ -664,6 +714,7 @@ function setNavActive(view) {
   document.getElementById('nav-meta').classList.toggle('active', view === 'meta');
   document.getElementById('nav-graph').classList.toggle('active', view === 'graph');
   document.getElementById('nav-traders').classList.toggle('active', view === 'traders');
+  document.getElementById('nav-benchmark').classList.toggle('active', view === 'benchmark');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -677,6 +728,7 @@ async function loadHome() {
   document.getElementById('view-graph').style.display = 'none';
   document.getElementById('view-dune').style.display = 'none';
   document.getElementById('view-collection').style.display = 'none';
+  document.getElementById('view-benchmark').style.display = 'none';
   document.getElementById('btn-back').classList.add('hidden');
   setNavActive('wallets');
   currentWallet = null;
@@ -872,6 +924,7 @@ async function loadDetail(address) {
   document.getElementById('view-graph').style.display = 'none';
   document.getElementById('view-dune').style.display = 'none';
   document.getElementById('view-collection').style.display = 'none';
+  document.getElementById('view-benchmark').style.display = 'none';
   document.getElementById('btn-back').classList.remove('hidden');
   setNavActive('wallets');
 
@@ -1459,6 +1512,7 @@ async function loadMeta() {
   document.getElementById('view-graph').style.display = 'none';
   document.getElementById('view-dune').style.display = 'none';
   document.getElementById('view-collection').style.display = 'none';
+  document.getElementById('view-benchmark').style.display = 'none';
   document.getElementById('btn-back').classList.add('hidden');
   setNavActive('meta');
 
@@ -1652,6 +1706,7 @@ async function loadCollection(addr) {
   document.getElementById('view-graph').style.display = 'none';
   document.getElementById('view-dune').style.display = 'none';
   document.getElementById('view-collection').style.display = '';
+  document.getElementById('view-benchmark').style.display = 'none';
   document.getElementById('btn-back').classList.remove('hidden');
   setNavActive('meta');
 
@@ -1873,8 +1928,8 @@ function overlayClick(e, id) { if (e.target.id === id) closeModal(id); }
 function makeHeaders(tableId, labels, defaultCol, defaultDir) {
   return labels.map((lbl, i) => {
     const alignCls = (i === labels.length - 1 && lbl === 'Tx') ? '' :
-      ['Buys','Sells','Fee %','Avg Hold','Open','Win Rate','Trades','Collections','Last Synced','#','Total Trades'].includes(lbl) ? 'tc' :
-      ['Spent ETH','Rcvd ETH','Fees ETH','PnL ETH','ROI','ETH','Gas ETH','Cost ETH','Volume (USD)'].includes(lbl) ? 'tr' : '';
+      ['Buys','Sells','Fee %','Avg Hold','Open','Win Rate','Trades','Collections','Last Synced','#','Total Trades','Your Trades','Others Trades','Your Hold','Others Hold'].includes(lbl) ? 'tc' :
+      ['Spent ETH','Rcvd ETH','Fees ETH','PnL ETH','ROI','ETH','Gas ETH','Cost ETH','Volume (USD)','Your ROI','Others ROI','Your PnL','Others PnL'].includes(lbl) ? 'tr' : '';
     return `<th class="${alignCls}" onclick="onThClick('${tableId}',${i})">${lbl}</th>`;
   }).join('');
 }
@@ -2044,6 +2099,7 @@ async function loadGraph() {
   document.getElementById('view-graph').style.display  = '';
   document.getElementById('view-dune').style.display   = 'none';
   document.getElementById('view-collection').style.display = 'none';
+  document.getElementById('view-benchmark').style.display = 'none';
   document.getElementById('btn-back').classList.add('hidden');
   setNavActive('graph');
 
@@ -2404,6 +2460,7 @@ async function loadDune() {
   document.getElementById('view-graph').style.display  = 'none';
   document.getElementById('view-dune').style.display   = '';
   document.getElementById('view-collection').style.display = 'none';
+  document.getElementById('view-benchmark').style.display = 'none';
   document.getElementById('btn-back').classList.add('hidden');
   setNavActive('traders');
 
@@ -2517,6 +2574,244 @@ function renderDuneRow(row) {
     </td>
     <td class="tc">${trades != null ? Number(trades).toLocaleString() : '—'}</td>
     <td class="mono tr">${volFmt}</td>
+  </tr>`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Benchmark view
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function loadBenchmark() {
+  document.getElementById('view-home').style.display = 'none';
+  document.getElementById('view-detail').style.display = 'none';
+  document.getElementById('view-meta').style.display = 'none';
+  document.getElementById('view-graph').style.display = 'none';
+  document.getElementById('view-dune').style.display = 'none';
+  document.getElementById('view-collection').style.display = 'none';
+  document.getElementById('view-benchmark').style.display = '';
+  document.getElementById('btn-back').classList.add('hidden');
+  setNavActive('benchmark');
+
+  // Restore timeframe button state
+  document.querySelectorAll('[data-bm-days]').forEach(b =>
+    b.classList.toggle('active', parseInt(b.dataset.bmDays) === benchmarkDays));
+
+  // Populate wallet chips
+  const chipsEl = document.getElementById('bm-wallet-chips');
+  try {
+    if (!walletCache) {
+      walletCache = await fetch('/api/wallets').then(r => r.json());
+    }
+    if (walletCache && walletCache.length) {
+      chipsEl.innerHTML = walletCache.map(w => {
+        const short = w.address.slice(0, 6) + '…' + w.address.slice(-4);
+        return `<button class="wallet-chip" onclick="document.getElementById('bm-addr').value='${esc(w.address)}'" title="${esc(w.address)}">${esc(w.name || short)}</button>`;
+      }).join('');
+    }
+  } catch { chipsEl.innerHTML = ''; }
+
+  // Restore previous results
+  if (benchmarkCache) {
+    document.getElementById('bm-results').style.display = '';
+    renderBenchmarkSummary(benchmarkCache);
+    renderBenchmarkTable(benchmarkCache);
+  }
+}
+
+function setBenchmarkDays(d) {
+  benchmarkDays = d;
+  document.querySelectorAll('[data-bm-days]').forEach(b =>
+    b.classList.toggle('active', parseInt(b.dataset.bmDays) === d));
+}
+
+async function runBenchmark() {
+  const addrEl = document.getElementById('bm-addr');
+  const addr = addrEl.value.trim().toLowerCase();
+  if (!/^0x[0-9a-fA-F]{40}$/.test(addr)) {
+    addrEl.classList.add('err');
+    return;
+  }
+  addrEl.classList.remove('err');
+
+  const btn = document.getElementById('bm-run-btn');
+  const loader = document.getElementById('bm-loader');
+  const results = document.getElementById('bm-results');
+  const status = document.getElementById('bm-status');
+
+  btn.disabled = true;
+  loader.style.display = '';
+  results.style.display = 'none';
+  status.textContent = '';
+  status.style.color = 'var(--muted)';
+
+  const t0 = Date.now();
+  try {
+    const url = `/api/benchmark?wallet=${encodeURIComponent(addr)}&days=${benchmarkDays}`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if (!res.ok) {
+      status.textContent = data.error || 'Error';
+      status.style.color = 'var(--red)';
+      loader.style.display = 'none';
+      return;
+    }
+    benchmarkCache = data;
+    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+    status.textContent = `${data.collections.length} collections · ${elapsed}s`;
+    loader.style.display = 'none';
+    results.style.display = '';
+    renderBenchmarkSummary(data);
+    renderBenchmarkTable(data);
+  } catch (e) {
+    status.textContent = 'Failed: ' + e.message;
+    status.style.color = 'var(--red)';
+    loader.style.display = 'none';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function renderBenchmarkSummary(data) {
+  const ts = data.target_summary;
+  const bs = data.basket_summary;
+
+  const cards = [
+    {
+      lbl: 'Realized PnL',
+      ty: fmtPnl(ts.realized_pnl_eth),
+      by: fmtPnl(bs.realized_pnl_eth),
+      tCls: ts.realized_pnl_eth >= 0 ? 'pos' : 'neg',
+      bCls: bs.realized_pnl_eth != null ? (bs.realized_pnl_eth >= 0 ? 'pos' : 'neg') : '',
+    },
+    {
+      lbl: 'ROI %',
+      ty: fmtRoi(ts.roi),
+      by: fmtRoi(bs.roi),
+      tCls: ts.roi != null ? (ts.roi >= 0 ? 'pos' : 'neg') : '',
+      bCls: bs.roi != null ? (bs.roi >= 0 ? 'pos' : 'neg') : '',
+    },
+    {
+      lbl: 'Win Rate',
+      ty: ts.win_rate != null ? ts.win_rate.toFixed(1) + '%' : '—',
+      by: bs.win_rate != null ? bs.win_rate.toFixed(1) + '%' : '—',
+      tCls: ts.win_rate != null && ts.win_rate >= 50 ? 'pos' : '',
+      bCls: '',
+    },
+    {
+      lbl: 'Avg Hold',
+      ty: fmtDays(ts.avg_holding_secs),
+      by: fmtDays(bs.avg_holding_secs),
+      tCls: '', bCls: '',
+    },
+    {
+      lbl: 'Trades',
+      ty: ts.total_trades.toLocaleString(),
+      by: bs.total_trades.toLocaleString(),
+      tCls: '', bCls: '',
+    },
+    {
+      lbl: 'Volume Spent',
+      ty: ts.total_buy_eth.toFixed(3) + ' ETH',
+      by: bs.total_buy_eth.toFixed(3) + ' ETH',
+      tCls: '', bCls: '',
+    },
+  ];
+
+  const wname = esc(data.wallet.name || (data.wallet.address.slice(0,6) + '…' + data.wallet.address.slice(-4)));
+  const bcount = bs.wallet_count;
+
+  document.getElementById('bm-summary').innerHTML =
+    `<div class="sc" style="grid-column:1/-1;background:transparent;border:none;padding:0 4px 0 0">` +
+      `<div style="font-size:13px;color:var(--muted)">` +
+        `Comparing <span style="color:var(--text);font-weight:600">${wname}</span> against ` +
+        `<span style="color:var(--text);font-weight:600">${bcount} other wallet${bcount !== 1 ? 's' : ''}</span> ` +
+        `in ${data.collections.length} shared collection${data.collections.length !== 1 ? 's' : ''}` +
+        (data.timeframe_days ? ` · last ${data.timeframe_days}d` : '') +
+      `</div>` +
+    `</div>` +
+    cards.map(c =>
+      `<div class="sc">` +
+        `<div class="sc-lbl">${c.lbl}</div>` +
+        `<div class="bm-cmp">` +
+          `<div class="bm-row"><span class="bm-lbl">You</span><span class="bm-val ${c.tCls}">${c.ty}</span></div>` +
+          `<div class="bm-row"><span class="bm-lbl">Others</span><span class="bm-val ${c.bCls}" style="color:var(--muted)">${c.by}</span></div>` +
+        `</div>` +
+      `</div>`
+    ).join('');
+}
+
+function renderBenchmarkTable(data) {
+  const cols = data.collections || [];
+  const wrap = document.getElementById('bm-table-wrap');
+  if (!cols.length) {
+    wrap.innerHTML = '<div class="no-data">No shared collections found with other wallets.</div>';
+    return;
+  }
+
+  // row: [colName_lc, yourTrades, othersTrades, yourROI, othersROI, yourHold, othersHold, yourPnL, othersPnL, addr, colObj]
+  const rows = cols.map(c => [
+    (c.name || c.address).toLowerCase(),
+    c.wallet.buys + c.wallet.sells,
+    c.basket.buys + c.basket.sells,
+    c.wallet.roi,
+    c.basket.roi,
+    c.wallet.avg_holding_secs,
+    c.basket.avg_holding_secs,
+    c.wallet.realized_pnl,
+    c.basket.realized_pnl,
+    c.address,
+    c,
+  ]);
+
+  const prev = tbls['bm-collections'];
+  const sortCol = prev ? prev.sortCol : 7;
+  const sortDir = prev ? prev.sortDir : -1;
+
+  wrap.innerHTML = `
+    <div class="tab-hdr" style="margin-bottom:10px">
+      <span class="badge">${cols.length} collection${cols.length !== 1 ? 's' : ''}</span>
+      <span style="font-size:12px;color:var(--muted)">vs ${data.basket_summary.wallet_count} other wallet${data.basket_summary.wallet_count !== 1 ? 's' : ''} · click a row to explore</span>
+    </div>
+    <div class="tbl-wrap">
+      <table id="tbl-bm-collections">
+        <thead><tr>
+          ${makeHeaders('bm-collections',
+            ['Collection','Your Trades','Others Trades','Your ROI','Others ROI','Your Hold','Others Hold','Your PnL','Others PnL'],
+            sortCol, sortDir)}
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>`;
+
+  initTable('bm-collections', rows, renderBenchmarkRow, sortCol, sortDir);
+}
+
+function renderBenchmarkRow(row) {
+  const [,,,yourROI, othersROI, yourHold, othersHold, yourPnL, othersPnL, addr, c] = row;
+  const wt = c.wallet, bt = c.basket;
+  const name = esc((c.name || addr).slice(0, 30));
+
+  const roiCls = yourROI != null && othersROI != null
+    ? (yourROI > othersROI ? 'pos' : yourROI < othersROI ? 'neg' : '')
+    : yourROI != null ? (yourROI >= 0 ? 'pos' : 'neg') : '';
+  const holdCls = yourHold != null && othersHold != null
+    ? (yourHold < othersHold ? 'pos' : yourHold > othersHold ? 'neg' : '') : '';
+  const pnlCls = yourPnL != null ? (yourPnL > 0 ? 'pos' : yourPnL < 0 ? 'neg' : '') : '';
+
+  const fROI = v => v != null ? (v >= 0 ? '+' : '') + v.toFixed(1) + '%' : '—';
+  const fHold = v => v ? fmtDays(v) : '—';
+  const fPnl = v => v != null ? (v >= 0 ? '+' : '') + v.toFixed(4) : '—';
+
+  return `<tr class="clickable" onclick="navigate('/collection/${esc(addr)}')">
+    <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(c.name || addr)}">${name}</td>
+    <td class="tc">${wt.buys + wt.sells}</td>
+    <td class="tc" style="color:var(--muted)">${bt.buys + bt.sells}</td>
+    <td class="mono tr pnl-cell ${roiCls}">${fROI(yourROI)}</td>
+    <td class="mono tr" style="color:var(--muted)">${fROI(othersROI)}</td>
+    <td class="tc ${holdCls}">${fHold(yourHold)}</td>
+    <td class="tc" style="color:var(--muted)">${fHold(othersHold)}</td>
+    <td class="mono tr pnl-cell ${pnlCls}">${fPnl(yourPnL)}</td>
+    <td class="mono tr" style="color:var(--muted)">${fPnl(othersPnL)}</td>
   </tr>`;
 }
 

@@ -465,6 +465,184 @@ def api_meta():
     return jsonify(rows)
 
 
+# ── API: benchmark (wallet vs basket comparison) ──────────────────────────────
+
+@app.route("/api/benchmark")
+def api_benchmark():
+    from collections import defaultdict
+    import re as _re
+
+    wallet_addr = request.args.get("wallet", "").strip().lower()
+    days = request.args.get("days", 0, type=int)
+
+    if not wallet_addr or not _re.fullmatch(r"0x[0-9a-fA-F]{40}", wallet_addr):
+        return jsonify({"error": "Invalid wallet address"}), 400
+
+    since = int(_time.time() - days * 86400) if days else None
+
+    db.init_db()
+    with db.get_conn() as conn:
+        target_trades = db.get_trades(conn, wallet_addr, since=since)
+
+    if not target_trades:
+        msg = "No trades in this time range." if since else "No trades found for this wallet."
+        return jsonify({"error": msg}), 404
+
+    target_stats = analytics.compute_analytics(target_trades)
+    target_collections = set(target_stats["per_collection"].keys())
+
+    if not target_collections:
+        return jsonify({"error": "No collection data found."}), 404
+
+    # Get basket wallet addresses (other wallets that traded these collections in the timeframe)
+    placeholders = ",".join("?" * len(target_collections))
+    col_list = list(target_collections)
+    with db.get_conn() as conn:
+        if since:
+            basket_rows = conn.execute(
+                f"SELECT DISTINCT wallet_address FROM trades WHERE wallet_address != ?"
+                f" AND collection_address IN ({placeholders}) AND block_timestamp >= ?",
+                [wallet_addr] + col_list + [since]
+            ).fetchall()
+        else:
+            basket_rows = conn.execute(
+                f"SELECT DISTINCT wallet_address FROM trades WHERE wallet_address != ?"
+                f" AND collection_address IN ({placeholders})",
+                [wallet_addr] + col_list
+            ).fetchall()
+
+    basket_wallets = [r["wallet_address"] for r in basket_rows]
+
+    # Aggregate basket stats per collection (run FIFO per basket wallet, then sum)
+    basket_per_col = defaultdict(lambda: {
+        "buys": 0, "sells": 0, "buy_eth": 0.0, "sell_eth": 0.0, "fees_eth": 0.0,
+        "realized_pnl": 0.0, "matched_trades": 0, "wins": 0, "losses": 0,
+        "holding_times": [], "name": "", "wallet_count": 0,
+    })
+
+    for bw in basket_wallets:
+        with db.get_conn() as conn:
+            bw_trades = db.get_trades(conn, bw, since=since)
+        bw_filtered = [t for t in bw_trades if t["collection_address"] in target_collections]
+        if not bw_filtered:
+            continue
+        bw_stats = analytics.compute_analytics(bw_filtered)
+        for col_addr, cs in bw_stats["per_collection"].items():
+            b = basket_per_col[col_addr]
+            if cs["name"]:
+                b["name"] = cs["name"]
+            b["buys"] += cs["buys"]
+            b["sells"] += cs["sells"]
+            b["buy_eth"] += cs["buy_eth"]
+            b["sell_eth"] += cs["sell_eth"]
+            b["fees_eth"] += cs["fees_eth"]
+            b["realized_pnl"] += cs["realized_pnl"]
+            b["matched_trades"] += cs["matched_trades"]
+            b["wins"] += cs.get("wins", 0)
+            b["losses"] += cs.get("losses", 0)
+            b["holding_times"].extend(cs.get("holding_times") or [])
+            b["wallet_count"] += 1
+
+    # Build per-collection comparison list
+    collections_out = []
+    for col_addr in target_collections:
+        tc = target_stats["per_collection"][col_addr]
+        bc = basket_per_col.get(col_addr, {})
+
+        t_ht = tc.get("holding_times") or []
+        t_wins, t_losses = tc.get("wins", 0), tc.get("losses", 0)
+        t_buy, t_pnl = tc.get("buy_eth", 0), tc.get("realized_pnl", 0)
+
+        wallet_col = {
+            "buys": tc["buys"],
+            "sells": tc["sells"],
+            "buy_eth": round(t_buy, 4),
+            "roi": round(t_pnl / t_buy * 100, 2) if t_buy else None,
+            "avg_holding_secs": round(sum(t_ht) / len(t_ht), 1) if t_ht else None,
+            "realized_pnl": round(t_pnl, 4),
+            "wins": t_wins,
+            "losses": t_losses,
+            "win_rate": round(t_wins / (t_wins + t_losses) * 100, 1) if (t_wins + t_losses) > 0 else None,
+            "matched_trades": tc.get("matched_trades", 0),
+        }
+
+        if bc:
+            b_ht = bc.get("holding_times") or []
+            b_wins, b_losses = bc.get("wins", 0), bc.get("losses", 0)
+            b_buy, b_pnl = bc.get("buy_eth", 0), bc.get("realized_pnl", 0)
+            basket_col = {
+                "buys": bc.get("buys", 0),
+                "sells": bc.get("sells", 0),
+                "buy_eth": round(b_buy, 4),
+                "roi": round(b_pnl / b_buy * 100, 2) if b_buy else None,
+                "avg_holding_secs": round(sum(b_ht) / len(b_ht), 1) if b_ht else None,
+                "realized_pnl": round(b_pnl, 4),
+                "wins": b_wins,
+                "losses": b_losses,
+                "win_rate": round(b_wins / (b_wins + b_losses) * 100, 1) if (b_wins + b_losses) > 0 else None,
+                "matched_trades": bc.get("matched_trades", 0),
+                "wallet_count": bc.get("wallet_count", 0),
+            }
+        else:
+            basket_col = {
+                "buys": 0, "sells": 0, "buy_eth": 0, "roi": None,
+                "avg_holding_secs": None, "realized_pnl": 0,
+                "wins": 0, "losses": 0, "win_rate": None, "matched_trades": 0, "wallet_count": 0,
+            }
+
+        collections_out.append({
+            "address": col_addr,
+            "name": tc.get("name") or bc.get("name") or col_addr[:10] + "...",
+            "wallet": wallet_col,
+            "basket": basket_col,
+        })
+
+    # Target summary (compute_analytics already aggregated all collections in the timeframe)
+    s = target_stats["summary"]
+    target_summary = {
+        "total_trades": s["total_trades"],
+        "total_buy_eth": round(s["total_buy_eth"], 4),
+        "realized_pnl_eth": round(s["realized_pnl_eth"], 4),
+        "roi": round(s["roi"] * 100, 2) if s.get("total_buy_eth") else None,
+        "avg_holding_secs": round(s["avg_holding"], 1) if s.get("avg_holding") else None,
+        "win_rate": round(s["win_rate"] * 100, 1) if s.get("win_rate") is not None else None,
+    }
+
+    # Basket summary (aggregate across all basket wallets' contributions to target collections)
+    b_total_buy = sum(v["buy_eth"] for v in basket_per_col.values())
+    b_total_pnl = sum(v["realized_pnl"] for v in basket_per_col.values())
+    b_total_trades = sum(v["buys"] + v["sells"] for v in basket_per_col.values())
+    b_all_ht, b_wins, b_losses = [], 0, 0
+    for v in basket_per_col.values():
+        b_all_ht.extend(v.get("holding_times") or [])
+        b_wins += v.get("wins", 0)
+        b_losses += v.get("losses", 0)
+
+    basket_summary = {
+        "total_trades": b_total_trades,
+        "total_buy_eth": round(b_total_buy, 4),
+        "realized_pnl_eth": round(b_total_pnl, 4),
+        "roi": round(b_total_pnl / b_total_buy * 100, 2) if b_total_buy else None,
+        "avg_holding_secs": round(sum(b_all_ht) / len(b_all_ht), 1) if b_all_ht else None,
+        "win_rate": round(b_wins / (b_wins + b_losses) * 100, 1) if (b_wins + b_losses) > 0 else None,
+        "wallet_count": len(basket_wallets),
+    }
+
+    with db.get_conn() as conn:
+        wallet_row = db.get_wallet(conn, wallet_addr)
+
+    return jsonify({
+        "wallet": {
+            "address": wallet_addr,
+            "name": wallet_row["name"] if wallet_row else None,
+        },
+        "timeframe_days": days,
+        "target_summary": target_summary,
+        "basket_summary": basket_summary,
+        "collections": collections_out,
+    })
+
+
 # ── API: collection detail (per-wallet breakdown for one collection) ───────────
 
 @app.route("/api/collection/<address>")
