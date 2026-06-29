@@ -2754,13 +2754,13 @@ function renderBenchmarkSummary(data) {
     },
     {
       lbl: 'ROI',
-      big: fDelta(roiDelta, '%'),
+      big: fDelta(roiDelta, ''),
       cls: posneg(roiDelta),
       sub: fSub(fmtRoi(ts.roi), fmtRoi(bs.roi)),
     },
     {
       lbl: 'Win Rate',
-      big: fDelta(wrDelta, '%'),
+      big: fDelta(wrDelta, ''),
       cls: posneg(wrDelta),
       sub: fSub(ts.win_rate != null ? ts.win_rate.toFixed(1) + '%' : '—',
                 bs.win_rate != null ? bs.win_rate.toFixed(1) + '%' : '—'),
