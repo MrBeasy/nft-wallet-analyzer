@@ -333,7 +333,7 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
         </div>
       </div>
       <div class="mf-group" style="min-width:240px">
-        <label class="mf-lbl">Traded (round-trips)</label>
+        <label class="mf-lbl">Sell Date (round-trips)</label>
         <div class="mf-range">
           <input id="wf-traded-from"  class="mf-inp" type="date" style="font-family:inherit" oninput="applyWalletFilters()">
           <input id="wf-traded-until" class="mf-inp" type="date" style="font-family:inherit" oninput="applyWalletFilters()">
@@ -674,6 +674,9 @@ const colPnlCache = {};
 let colDetailDays = 0;
 let detailDays = 0; // 0 = all time; cache key = address + ':' + days
 let walletCache = null;
+let walletDateCache = null;  // date-filtered stats from backend
+let walletDateFrom  = '';
+let walletDateUntil = '';
 
 // sortable table registry: tableId → { rows, sortCol, sortDir, renderRow }
 const tbls = {};
@@ -721,6 +724,12 @@ function setNavActive(view) {
 // Home
 // ─────────────────────────────────────────────────────────────────────────────
 
+function defaultTradedFrom() {
+  const d = new Date();
+  d.setDate(d.getDate() - 7);
+  return d.toISOString().slice(0, 10);
+}
+
 async function loadHome() {
   document.getElementById('view-home').style.display = '';
   document.getElementById('view-detail').style.display = 'none';
@@ -740,15 +749,22 @@ async function loadHome() {
   loader.style.display = '';
   noW.classList.add('hidden');
 
+  walletDateCache = null;
+  walletDateFrom  = '';
+  walletDateUntil = '';
+
   try {
     const wallets = await fetch('/api/wallets').then(r => r.json());
     loader.style.display = 'none';
     if (!wallets.length) { noW.classList.remove('hidden'); return; }
     walletCache = wallets;
-    renderWalletTable(wallets);
     document.getElementById('home-toolbar').style.display = '';
     document.getElementById('wallet-table-wrap').style.display = '';
-    applyWalletFilters();
+    // Set default 7-day sell window if the filter is not already populated
+    if (!document.getElementById('wf-traded-from').value) {
+      document.getElementById('wf-traded-from').value = defaultTradedFrom();
+    }
+    await applyWalletFilters();
   } catch {
     loader.innerHTML = '<p style="color:var(--muted)">Failed to load wallets.</p>';
   }
@@ -833,8 +849,35 @@ function renderWalletRow(row) {
   </tr>`;
 }
 
-function applyWalletFilters() {
+async function applyWalletFilters() {
   if (!walletCache) return;
+
+  const tradedFromV  = document.getElementById('wf-traded-from').value;
+  const tradedUntilV = document.getElementById('wf-traded-until').value;
+
+  // When sell-date filter is set, fetch recomputed stats from the backend.
+  // Cache the result and only re-fetch when the date values actually change.
+  let baseData = walletCache;
+  if (tradedFromV || tradedUntilV) {
+    if (tradedFromV !== walletDateFrom || tradedUntilV !== walletDateUntil) {
+      walletDateFrom  = tradedFromV;
+      walletDateUntil = tradedUntilV;
+      const params = new URLSearchParams();
+      if (tradedFromV)  params.set('sell_from',  Math.floor(Date.parse(tradedFromV)  / 1000));
+      if (tradedUntilV) params.set('sell_until', Math.floor(Date.parse(tradedUntilV) / 1000) + 86399);
+      try {
+        walletDateCache = await fetch(`/api/wallets?${params}`).then(r => r.json());
+      } catch {
+        walletDateCache = null;
+      }
+    }
+    // Only show wallets that have at least one round-trip with a sell in the period
+    baseData = (walletDateCache || walletCache).filter(w => (w.total_trades ?? 0) > 0);
+  } else {
+    walletDateCache = null;
+    walletDateFrom  = '';
+    walletDateUntil = '';
+  }
 
   const nameQ        = document.getElementById('wf-name').value.trim().toLowerCase();
   const pnlFrom      = parseFloat(document.getElementById('wf-pnl-from').value);
@@ -849,12 +892,8 @@ function applyWalletFilters() {
   const holdUntilDays = parseFloat(document.getElementById('wf-hold-until').value);
   const holdFrom  = isNaN(holdFromDays)  ? NaN : holdFromDays  * 86400;
   const holdUntil = isNaN(holdUntilDays) ? NaN : holdUntilDays * 86400;
-  const syncedFromV = document.getElementById('wf-synced-from').value;
+  const syncedFromV  = document.getElementById('wf-synced-from').value;
   const syncedFromTs = syncedFromV ? Date.parse(syncedFromV) / 1000 : NaN;
-  const tradedFromV  = document.getElementById('wf-traded-from').value;
-  const tradedUntilV = document.getElementById('wf-traded-until').value;
-  const tradedFromTs  = tradedFromV  ? Date.parse(tradedFromV)  / 1000 : NaN;
-  const tradedUntilTs = tradedUntilV ? Date.parse(tradedUntilV) / 1000 + 86399 : NaN; // inclusive end-of-day
 
   // Returns false if val is outside [from, until]. Null val excluded whenever any bound is set.
   const inRange = (val, from, until) => {
@@ -865,7 +904,7 @@ function applyWalletFilters() {
     return true;
   };
 
-  const filtered = walletCache.filter(w => {
+  const filtered = baseData.filter(w => {
     if (nameQ && !(w.name || w.address || '').toLowerCase().includes(nameQ)) return false;
 
     const pnl = w.realized_pnl_eth;
@@ -879,16 +918,6 @@ function applyWalletFilters() {
     if (!inRange(w.avg_holding_secs, holdFrom,   holdUntil))   return false;
     if (!isNaN(syncedFromTs) && (w.last_synced_at == null || w.last_synced_at < syncedFromTs)) return false;
 
-    // Traded date: wallet must have at least one sell within [tradedFromTs, tradedUntilTs].
-    if (!isNaN(tradedFromTs) || !isNaN(tradedUntilTs)) {
-      const sells = w.sell_timestamps || [];
-      const hit = sells.some(ts =>
-        (isNaN(tradedFromTs)  || ts >= tradedFromTs) &&
-        (isNaN(tradedUntilTs) || ts <= tradedUntilTs)
-      );
-      if (!hit) return false;
-    }
-
     return true;
   });
 
@@ -899,9 +928,10 @@ function resetWalletFilters() {
   ['wf-name','wf-pnl-from','wf-pnl-until','wf-roi-from','wf-roi-until',
    'wf-wr-from','wf-wr-until','wf-trades-from','wf-trades-until',
    'wf-hold-from','wf-hold-until','wf-synced-from',
-   'wf-traded-from','wf-traded-until'].forEach(id => {
+   'wf-traded-until'].forEach(id => {
     document.getElementById(id).value = '';
   });
+  document.getElementById('wf-traded-from').value = defaultTradedFrom();
   applyWalletFilters();
 }
 
@@ -2675,49 +2705,75 @@ function renderBenchmarkSummary(data) {
   const ts = data.target_summary;
   const bs = data.basket_summary;
 
+  // Share of total for additive metrics (always positive, so [0,100]%)
+  const totalTrades = (ts.total_trades || 0) + (bs.total_trades || 0);
+  const totalVol    = (ts.total_buy_eth || 0) + (bs.total_buy_eth || 0);
+  const totalPnl    = (ts.realized_pnl_eth || 0) + (bs.realized_pnl_eth || 0);
+  const sharePct = (mine, total) => total !== 0 ? mine / total * 100 : null;
+  const tradeShare = sharePct(ts.total_trades || 0, totalTrades);
+  const volShare   = sharePct(ts.total_buy_eth || 0, totalVol);
+  // PnL share only defined when total PnL is positive (otherwise ratio is meaningless)
+  const pnlShare   = totalPnl > 0 ? sharePct(ts.realized_pnl_eth || 0, totalPnl) : null;
+
+  // Deltas for rate metrics
+  const roiDelta  = (ts.roi != null && bs.roi != null) ? ts.roi - bs.roi : null;
+  const wrDelta   = (ts.win_rate != null && bs.win_rate != null) ? ts.win_rate - bs.win_rate : null;
+  const holdDelta = (ts.avg_holding_secs != null && bs.avg_holding_secs != null)
+    ? ts.avg_holding_secs - bs.avg_holding_secs : null;
+
+  const fShare = v => v == null ? '—' : v.toFixed(1) + '%';
+  const fDelta = (v, suffix) => v == null ? '—' : (v > 0 ? '+' : '') + v.toFixed(1) + suffix;
+  const fHoldDelta = v => {
+    if (v == null) return '—';
+    const abs = Math.abs(v);
+    const fmt = abs < 86400 ? (abs / 3600).toFixed(1) + 'h' : (abs / 86400).toFixed(1) + 'd';
+    return (v > 0 ? '+' : v < 0 ? '−' : '') + fmt;
+  };
+  const fSub = (you, others) =>
+    `<span style="color:var(--subtle)">You</span> ${you}&nbsp;&nbsp;<span style="color:var(--subtle)">Others</span> ${others}`;
+  const posneg = v => v == null ? '' : v > 0 ? 'pos' : v < 0 ? 'neg' : '';
+
   const cards = [
     {
       lbl: 'Realized PnL',
-      ty: fmtPnl(ts.realized_pnl_eth),
-      by: fmtPnl(bs.realized_pnl_eth),
-      tCls: ts.realized_pnl_eth >= 0 ? 'pos' : 'neg',
-      bCls: bs.realized_pnl_eth != null ? (bs.realized_pnl_eth >= 0 ? 'pos' : 'neg') : '',
-    },
-    {
-      lbl: 'ROI %',
-      ty: fmtRoi(ts.roi),
-      by: fmtRoi(bs.roi),
-      tCls: ts.roi != null ? (ts.roi >= 0 ? 'pos' : 'neg') : '',
-      bCls: bs.roi != null ? (bs.roi >= 0 ? 'pos' : 'neg') : '',
-    },
-    {
-      lbl: 'Win Rate',
-      ty: ts.win_rate != null ? ts.win_rate.toFixed(1) + '%' : '—',
-      by: bs.win_rate != null ? bs.win_rate.toFixed(1) + '%' : '—',
-      tCls: ts.win_rate != null && ts.win_rate >= 50 ? 'pos' : '',
-      bCls: '',
-    },
-    {
-      lbl: 'Avg Hold',
-      ty: fmtDays(ts.avg_holding_secs),
-      by: fmtDays(bs.avg_holding_secs),
-      tCls: '', bCls: '',
+      big: pnlShare != null ? fShare(pnlShare) + ' of total' : fmtPnl(ts.realized_pnl_eth),
+      cls: pnlShare != null ? '' : posneg(ts.realized_pnl_eth),
+      sub: fSub(fmtPnl(ts.realized_pnl_eth), fmtPnl(bs.realized_pnl_eth)),
     },
     {
       lbl: 'Trades',
-      ty: ts.total_trades.toLocaleString(),
-      by: bs.total_trades.toLocaleString(),
-      tCls: '', bCls: '',
+      big: fShare(tradeShare) + ' of total',
+      cls: '',
+      sub: fSub(ts.total_trades, bs.total_trades),
     },
     {
       lbl: 'Volume Spent',
-      ty: ts.total_buy_eth.toFixed(3) + ' ETH',
-      by: bs.total_buy_eth.toFixed(3) + ' ETH',
-      tCls: '', bCls: '',
+      big: fShare(volShare) + ' of total',
+      cls: '',
+      sub: fSub((ts.total_buy_eth || 0).toFixed(3) + ' ETH', (bs.total_buy_eth || 0).toFixed(3) + ' ETH'),
+    },
+    {
+      lbl: 'ROI',
+      big: fDelta(roiDelta, '%'),
+      cls: posneg(roiDelta),
+      sub: fSub(fmtRoi(ts.roi), fmtRoi(bs.roi)),
+    },
+    {
+      lbl: 'Win Rate',
+      big: fDelta(wrDelta, '%'),
+      cls: posneg(wrDelta),
+      sub: fSub(ts.win_rate != null ? ts.win_rate.toFixed(1) + '%' : '—',
+                bs.win_rate != null ? bs.win_rate.toFixed(1) + '%' : '—'),
+    },
+    {
+      lbl: 'Avg Hold',
+      big: fHoldDelta(holdDelta),
+      cls: '',
+      sub: fSub(fmtDays(ts.avg_holding_secs), fmtDays(bs.avg_holding_secs)),
     },
   ];
 
-  const wname = esc(data.wallet.name || (data.wallet.address.slice(0,6) + '…' + data.wallet.address.slice(-4)));
+  const wname  = esc(data.wallet.name || (data.wallet.address.slice(0,6) + '…' + data.wallet.address.slice(-4)));
   const bcount = bs.wallet_count;
 
   document.getElementById('bm-summary').innerHTML =
@@ -2732,10 +2788,8 @@ function renderBenchmarkSummary(data) {
     cards.map(c =>
       `<div class="sc">` +
         `<div class="sc-lbl">${c.lbl}</div>` +
-        `<div class="bm-cmp">` +
-          `<div class="bm-row"><span class="bm-lbl">You</span><span class="bm-val ${c.tCls}">${c.ty}</span></div>` +
-          `<div class="bm-row"><span class="bm-lbl">Others</span><span class="bm-val ${c.bCls}" style="color:var(--muted)">${c.by}</span></div>` +
-        `</div>` +
+        `<div class="sc-val ${c.cls}" style="font-size:18px;margin:6px 0 6px">${c.big}</div>` +
+        `<div style="font-size:11px;line-height:1.5">${c.sub}</div>` +
       `</div>`
     ).join('');
 }
