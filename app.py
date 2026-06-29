@@ -26,8 +26,27 @@ def index():
 
 # ── API: wallets ───────────────────────────────────────────────────────────────
 
+def _wallet_stats_from_matched(matched):
+    """Recompute wallet summary stats from a filtered list of matched round-trips."""
+    if not matched:
+        return {"realized_pnl_eth": 0.0, "total_trades": 0, "win_rate": None,
+                "avg_holding_secs": None, "total_buy_eth": 0.0}
+    pnl = sum(m["pnl_eth"] for m in matched)
+    wins = sum(1 for m in matched if m["pnl_eth"] > 0)
+    holds = [m["holding_secs"] for m in matched if m["holding_secs"] >= 0]
+    return {
+        "realized_pnl_eth": pnl,
+        "total_trades": len(matched),
+        "win_rate": wins / len(matched),
+        "avg_holding_secs": sum(holds) / len(holds) if holds else None,
+        "total_buy_eth": sum(m["buy_eth"] for m in matched),
+    }
+
+
 @app.route("/api/wallets")
 def api_wallets():
+    sell_from  = request.args.get("sell_from",  type=int)  # Unix timestamp, inclusive
+    sell_until = request.args.get("sell_until", type=int)  # Unix timestamp, inclusive
     db.init_db()
     with db.get_conn() as conn:
         rows = conn.execute("""
@@ -55,6 +74,19 @@ def api_wallets():
     for r in rows:
         d = dict(r)
         d["sell_timestamps"] = sell_map.get(d["address"], [])
+        if sell_from is not None or sell_until is not None:
+            with db.get_conn() as conn:
+                trades = db.get_trades(conn, d["address"])
+            if trades:
+                ar = analytics.compute_analytics(trades)
+                matched = [
+                    m for m in ar.get("matched_trades", [])
+                    if (sell_from  is None or m["sell_ts"] >= sell_from)
+                    and (sell_until is None or m["sell_ts"] <= sell_until)
+                ]
+                d.update(_wallet_stats_from_matched(matched))
+            else:
+                d.update(_wallet_stats_from_matched([]))
         result.append(d)
     return jsonify(result)
 
