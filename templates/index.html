@@ -2737,7 +2737,7 @@ function renderBenchmarkSummary(data) {
     {
       lbl: 'Realized PnL',
       big: pnlShare != null ? fShare(pnlShare) + ' of total' : fmtPnl(ts.realized_pnl_eth),
-      cls: pnlShare != null ? '' : posneg(ts.realized_pnl_eth),
+      cls: pnlShare != null ? (pnlShare > tradeShare ? 'pos' : pnlShare < tradeShare ? 'neg' : '') : posneg(ts.realized_pnl_eth),
       sub: fSub(fmtPnl(ts.realized_pnl_eth), fmtPnl(bs.realized_pnl_eth)),
     },
     {
@@ -2768,7 +2768,7 @@ function renderBenchmarkSummary(data) {
     {
       lbl: 'Avg Hold',
       big: fHoldDelta(holdDelta),
-      cls: '',
+      cls: holdDelta == null ? '' : holdDelta < 0 ? 'pos' : holdDelta > 0 ? 'neg' : '',
       sub: fSub(fmtDays(ts.avg_holding_secs), fmtDays(bs.avg_holding_secs)),
     },
   ];
