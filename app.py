@@ -1,11 +1,14 @@
 """Flask web frontend for NFT Player Analysis."""
 
 import json
+import logging
 import os
 import subprocess
 import sys
 import time as _time
 from datetime import datetime, timezone as _tz
+
+log = logging.getLogger(__name__)
 
 import requests as _req
 from flask import Flask, Response, jsonify, render_template, request, stream_with_context
@@ -309,6 +312,22 @@ def api_floor(address):
         if not open_positions:
             return jsonify({"upnl_eth": None, "floor_value_eth": None,
                             "cost_basis_eth": 0, "floor_prices": {}})
+
+        # Filter out positions where the NFT is no longer held (transferred/sent away).
+        # On exception (rate limit, network error) we fall through and show unfiltered positions.
+        try:
+            held_nfts = fetch.fetch_wallet_nfts(address)
+            open_positions = {
+                k: buys for k, buys in open_positions.items()
+                if (k.split(":", 1)[0], k.split(":", 1)[1]) in held_nfts
+            }
+        except Exception as e:
+            log.warning("Could not fetch wallet holdings, uPnL may include transferred NFTs: %s", e)
+
+        if not open_positions:
+            return jsonify({"upnl_eth": None, "floor_value_eth": None,
+                            "cost_basis_eth": 0, "floor_prices": {},
+                            "transferred_away": True})
 
         # Collect unique slugs across all open buys
         slug_to_fee = {}

@@ -100,14 +100,45 @@ def fetch_floor_price(slug: str) -> float | None:
 def fetch_best_offer(slug: str) -> float | None:
     """Returns best collection offer in ETH, or None if no offers exist."""
     url = f"{OPENSEA_BASE}/offers/collection/{slug}"
-    data = _get(url, {}, _opensea_headers())
+    params = {"order_by": "eth_price", "order_direction": "desc", "limit": 1}
+    data = _get(url, params, _opensea_headers())
     offers = data.get("offers") or []
     if not offers:
         return None
     try:
-        return int(offers[0]["price"]["current"]["value"]) / 1e18
+        raw = offers[0]["price"]["current"]["value"]
+        return int(float(raw)) / 1e18
     except (KeyError, TypeError, ValueError):
         return None
+
+
+def fetch_wallet_nfts(wallet_address: str) -> set:
+    """
+    Returns set of (collection_address, nft_id) for all NFTs currently held by the wallet.
+    Paginates up to 10 pages (2 000 NFTs max).
+    """
+    held = set()
+    url = f"{OPENSEA_BASE}/chain/ethereum/account/{wallet_address}/nfts"
+    cursor = None
+    for _ in range(10):
+        params = {"limit": 200}
+        if cursor:
+            params["next"] = cursor
+        try:
+            data = _get(url, params, _opensea_headers())
+        except Exception as e:
+            log.warning("fetch_wallet_nfts page failed: %s", e)
+            break
+        for nft in data.get("nfts") or []:
+            contract = (nft.get("contract") or "").lower()
+            identifier = str(nft.get("identifier") or "")
+            if contract and identifier:
+                held.add((contract, identifier))
+        cursor = data.get("next")
+        if not cursor:
+            break
+        time.sleep(0.3)
+    return held
 
 
 def fetch_sale_events(wallet_address: str, cursor: Optional[str] = None) -> tuple[list, Optional[str]]:
