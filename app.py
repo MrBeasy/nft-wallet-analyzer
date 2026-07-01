@@ -118,6 +118,20 @@ def api_report(address):
         with db.get_conn() as conn:
             db.upsert_wallet_summary(conn, address, result["summary"], latest_trade_ts)
 
+    # Player card — uses unstripped per_collection (still has holding_times)
+    addr_to_slug = {}
+    for t in trades:
+        if t["collection_slug"] and t["collection_address"]:
+            addr_to_slug[t["collection_address"]] = t["collection_slug"]
+    _slugs = list(set(addr_to_slug.values()))
+    floor_data = {}
+    if _slugs:
+        with db.get_conn() as conn:
+            floor_data = db.get_cached_floors(conn, _slugs)
+    player_card = analytics.compute_player_card(
+        trades, result["per_collection"], result["summary"], floor_data
+    )
+
     # Strip non-serializable holding_times list
     per_col = {}
     for addr, s in result["per_collection"].items():
@@ -136,6 +150,7 @@ def api_report(address):
         "open_positions": result.get("open_positions", {}),
         "sync_state": dict(sync_state) if sync_state else None,
         "filter_since": since,
+        "player_card": player_card,
     })
 
 

@@ -77,6 +77,38 @@ main{padding:24px;max-width:1280px;margin:0 auto}
 .sc-val{font-size:20px;font-weight:700;font-family:var(--mono);letter-spacing:-.3px}
 .sc-val.pos{color:var(--green)}.sc-val.neg{color:var(--red)}
 
+/* ── Player card ── */
+.pc-card{background:var(--surface);border:1px solid var(--border);
+  border-radius:var(--r);padding:14px 20px;margin-bottom:20px;position:relative}
+.pc-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.pc-title{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;font-weight:600}
+.pc-settings-btn{background:none;border:none;color:var(--muted);cursor:pointer;font-size:15px;
+  padding:2px 5px;border-radius:var(--r2);line-height:1;transition:color .15s}
+.pc-settings-btn:hover{color:var(--text)}
+.pc-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:16px}
+.pc-metric{display:flex;flex-direction:column;gap:2px}
+.pc-lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;
+  position:relative;width:fit-content}
+.pc-val{font-size:18px;font-weight:700;font-family:var(--mono);letter-spacing:-.2px}
+.pc-val.pos{color:var(--green)}.pc-val.neg{color:var(--red)}
+.pc-sub{font-size:11px;color:var(--muted)}
+/* tooltip */
+.pc-lbl[data-tip]{cursor:help}
+.pc-lbl[data-tip]::after{content:attr(data-tip);position:absolute;bottom:calc(100% + 6px);left:0;
+  background:#1c2128;border:1px solid var(--border);color:var(--text);
+  font-size:11px;line-height:1.45;padding:6px 9px;border-radius:6px;
+  width:max-content;max-width:220px;white-space:normal;text-transform:none;letter-spacing:0;
+  font-weight:400;pointer-events:none;opacity:0;transition:opacity .15s;z-index:200}
+.pc-lbl[data-tip]:hover::after{opacity:1}
+/* settings panel */
+.pc-settings{display:none;margin-top:16px;padding-top:14px;border-top:1px solid var(--border);
+  grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px 20px;align-items:end}
+.pc-settings.open{display:grid}
+.pc-set-field{display:flex;flex-direction:column;gap:5px}
+.pc-set-lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+.pc-set-inp{background:var(--bg);border:1px solid var(--border);color:var(--text);
+  border-radius:var(--r2);padding:4px 8px;font-size:13px;font-family:var(--mono);width:90px}
+
 /* ── Tabs ── */
 .tabs-wrap{border-bottom:1px solid var(--border);margin-bottom:16px}
 .tabs{display:flex}
@@ -396,6 +428,7 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
 
   <div id="d-content" style="display:none">
     <div id="sum-grid" class="sum-grid"></div>
+    <div id="d-player-card"></div>
 
     <div class="tabs-wrap">
       <div class="tabs">
@@ -1071,12 +1104,149 @@ function renderDetail(data) {
   }
 
   renderSummary(data.summary);
+  renderPlayerCard(data.player_card, data.summary);
   renderCollectionsPane(data);
   renderOpenPane(data);
 
   if (data.summary.open_positions > 0) {
     fetchFloorData(data.wallet.address);
   }
+}
+
+// ── Player card settings (localStorage-backed) ────────────────────────────────
+let _pcSettings = {};
+(function() {
+  try { _pcSettings = JSON.parse(localStorage.getItem('pc_settings') || '{}'); } catch {}
+})();
+
+function _pcGet(key, def) {
+  const v = _pcSettings[key];
+  return (v !== undefined && v !== null) ? Number(v) : def;
+}
+
+function _pcDiamondLabel(avg_secs) {
+  if (!avg_secs) return 'No Data';
+  const days = avg_secs / 86400;
+  if (days < _pcGet('dh_flipper_days', 7))  return 'Flipper';
+  if (days < _pcGet('dh_trader_days', 180)) return 'Trader';
+  return 'Diamond Hand';
+}
+
+let _pcLastArgs = null;
+
+function togglePcSettings() {
+  const p = document.getElementById('pc-settings-panel');
+  if (p) p.classList.toggle('open');
+}
+
+function savePcSettings() {
+  _pcSettings = {
+    dh_flipper_days: Number(document.getElementById('pc-s-flipper').value) || 7,
+    dh_trader_days:  Number(document.getElementById('pc-s-trader').value)  || 180,
+  };
+  localStorage.setItem('pc_settings', JSON.stringify(_pcSettings));
+  if (_pcLastArgs) renderPlayerCard(..._pcLastArgs);
+}
+
+function renderPlayerCard(pc, summary) {
+  _pcLastArgs = [pc, summary];
+  const el = document.getElementById('d-player-card');
+  if (!el) return;
+  if (!pc) { el.innerHTML = ''; return; }
+
+  const wasOpen = document.getElementById('pc-settings-panel')?.classList.contains('open');
+
+  // Wallet age
+  const days = pc.wallet_age_days;
+  const ageStr = days == null ? '—'
+    : days >= 365 ? (days / 365).toFixed(1) + 'y'
+    : Math.round(days) + 'd';
+  const sinceStr = pc.first_trade_ts
+    ? 'Since ' + new Date(pc.first_trade_ts * 1000)
+        .toLocaleDateString('en-US', {month: 'short', year: 'numeric'})
+    : '';
+
+  // Trades 30d
+  const total = pc.total_trades ?? (summary && summary.total_trades) ?? '?';
+
+  // Diamond hands — label derived client-side from avg_holding_secs
+  const dh = pc.diamond_hands;
+  const dhVal = _pcDiamondLabel(dh.avg_holding_secs);
+  const dhSub = dh.avg_holding_secs ? fmtDays(dh.avg_holding_secs) + ' avg hold' : '—';
+
+  // Bot score
+  const bs = pc.bot_score;
+  const botCls = bs.label === 'Clean' ? 'pos' : bs.label === 'Bot-like' ? 'neg' : '';
+  const botStyle = bs.label === 'Suspicious' ? ' style="color:var(--yellow)"' : '';
+
+  // Entry vs floor
+  const evf = pc.avg_entry_vs_floor;
+  const evfVal = evf.ratio != null
+    ? (evf.ratio >= 0 ? '+' : '') + (evf.ratio * 100).toFixed(1) + '%' : '—';
+  const evfCls = evf.ratio == null ? '' : evf.ratio <= 0 ? 'pos' : 'neg';
+  const evfSub = evf.label
+    ? esc(evf.label) + ' · ' + evf.collections_with_floor + ' coll.' : 'No floor data';
+
+  // Collector style
+  const cs = pc.collector_style;
+  const csSub = cs.multi_count + ' bulk · ' + cs.single_count + ' single · ' + cs.total_collections + ' total';
+
+  // Settings values
+  const flipperDays = _pcGet('dh_flipper_days', 7);
+  const traderDays  = _pcGet('dh_trader_days', 180);
+
+  el.innerHTML = `
+    <div class="pc-card">
+      <div class="pc-hdr">
+        <span class="pc-title">Player Card</span>
+        <button class="pc-settings-btn" onclick="togglePcSettings()" title="Configure thresholds">⚙</button>
+      </div>
+      <div class="pc-grid">
+        <div class="pc-metric">
+          <div class="pc-lbl" data-tip="Time since the first ever recorded trade for this wallet">Wallet Age</div>
+          <div class="pc-val">${esc(ageStr)}</div>
+          <div class="pc-sub">${esc(sinceStr)}</div>
+        </div>
+        <div class="pc-metric">
+          <div class="pc-lbl" data-tip="Number of buy and sell events recorded in the last 30 days">Trades (30d)</div>
+          <div class="pc-val">${pc.trades_last_30d}</div>
+          <div class="pc-sub">of ${esc(String(total))} total</div>
+        </div>
+        <div class="pc-metric">
+          <div class="pc-lbl" data-tip="Holding style based on the average time between buy and sell across all matched trades. Thresholds are configurable via ⚙">Diamond Hands</div>
+          <div class="pc-val">${esc(dhVal)}</div>
+          <div class="pc-sub">${esc(dhSub)}</div>
+        </div>
+        <div class="pc-metric">
+          <div class="pc-lbl" data-tip="Detected from consecutive trades within 60 seconds of each other. High ratio may indicate automated or scripted activity">Bot Score</div>
+          <div class="pc-val ${botCls}"${botStyle}>${esc(bs.label)}</div>
+          <div class="pc-sub">${bs.rapid_pairs} rapid pair${bs.rapid_pairs !== 1 ? 's' : ''}</div>
+        </div>
+        <div class="pc-metric">
+          <div class="pc-lbl" data-tip="Average buy price vs current floor price across collections (using cached floor data). Negative = bought below floor">Entry vs Floor</div>
+          <div class="pc-val ${evfCls}">${evfVal}</div>
+          <div class="pc-sub">${evfSub}</div>
+        </div>
+        <div class="pc-metric">
+          <div class="pc-lbl" data-tip="Based on how many collections this wallet bought into more than once. One-of-a-kind &lt;20%, Bulk Buyer &gt;60%">Collector Style</div>
+          <div class="pc-val">${esc(cs.label)}</div>
+          <div class="pc-sub">${esc(csSub)}</div>
+        </div>
+      </div>
+      <div id="pc-settings-panel" class="pc-settings${wasOpen ? ' open' : ''}">
+        <div class="pc-set-field">
+          <label class="pc-set-lbl">Flipper max (days)</label>
+          <input class="pc-set-inp" id="pc-s-flipper" type="number" min="1" max="365" value="${flipperDays}">
+        </div>
+        <div class="pc-set-field">
+          <label class="pc-set-lbl">Diamond Hand min (days)</label>
+          <input class="pc-set-inp" id="pc-s-trader" type="number" min="1" max="3650" value="${traderDays}">
+        </div>
+        <div class="pc-set-field" style="justify-content:flex-end">
+          <button class="btn btn-outline" onclick="savePcSettings()">Apply</button>
+        </div>
+      </div>
+    </div>`;
 }
 
 function renderSummary(s) {

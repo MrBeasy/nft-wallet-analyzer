@@ -241,6 +241,124 @@ def compute_analytics(trades: list) -> dict:
     }
 
 
+# ── Player Card ───────────────────────────────────────────────────────────────
+
+def _diamond_score(avg_secs, flipper_days=7, trader_days=180):
+    if not avg_secs:
+        return {"label": "No Data"}
+    d = avg_secs / 86400
+    if d < flipper_days:  return {"label": "Flipper"}
+    if d < trader_days:   return {"label": "Trader"}
+    return                       {"label": "Diamond Hand"}
+
+
+def compute_player_card(trades, per_collection, summary, floor_data):
+    import time as _time
+
+    timestamps = sorted(int(t["block_timestamp"]) for t in trades)
+    now = _time.time()
+
+    # Wallet age
+    first_ts = timestamps[0] if timestamps else None
+    wallet_age_days = (now - first_ts) / 86400 if first_ts else None
+
+    # Trades last 30d
+    cutoff_30d = now - 30 * 86400
+    trades_last_30d = sum(1 for ts in timestamps if ts >= cutoff_30d)
+
+    # Bot score
+    total = len(timestamps)
+    if total <= 1:
+        rapid_pairs, bot_ratio = 0, 0.0
+    else:
+        rapid_pairs = sum(
+            1 for i in range(len(timestamps) - 1)
+            if timestamps[i + 1] - timestamps[i] <= 60
+        )
+        bot_ratio = rapid_pairs / (total - 1)
+    if bot_ratio < 0.1:
+        bot_label = "Clean"
+    elif bot_ratio < 0.3:
+        bot_label = "Suspicious"
+    else:
+        bot_label = "Bot-like"
+
+    # Diamond hands — label is the backend default; frontend overrides with user thresholds
+    dh = _diamond_score(summary.get("avg_holding", 0))
+    dh["avg_holding_secs"] = summary.get("avg_holding") or None
+
+    # Collector style
+    buying_cols = [c for c in per_collection.values() if c.get("buys", 0) > 0]
+    total_cols = len(buying_cols)
+    multi_count = sum(1 for c in buying_cols if c["buys"] > 1)
+    single_count = total_cols - multi_count
+    style_ratio = multi_count / total_cols if total_cols else 0.0
+    if style_ratio < 0.2:
+        style_label = "One-of-a-kind"
+    elif style_ratio < 0.6:
+        style_label = "Mixed"
+    else:
+        style_label = "Bulk Buyer"
+
+    # Avg entry vs floor
+    addr_to_slug = {}
+    for t in trades:
+        slug = t["collection_slug"]
+        addr = t["collection_address"]
+        if slug and addr:
+            addr_to_slug[addr] = slug
+
+    entry_ratios = []
+    for addr, col in per_collection.items():
+        buy_eth = col.get("buy_eth", 0)
+        buys = col.get("buys", 0)
+        if not buy_eth or not buys:
+            continue
+        slug = addr_to_slug.get(addr)
+        if not slug:
+            continue
+        floor_eth = (floor_data.get(slug) or {}).get("floor_price_eth")
+        if not floor_eth or floor_eth <= 0:
+            continue
+        entry_ratios.append((buy_eth / buys) / floor_eth - 1)
+
+    if entry_ratios:
+        avg_evf = sum(entry_ratios) / len(entry_ratios)
+        if avg_evf < -0.05:
+            evf_label = "Below Floor"
+        elif avg_evf <= 0.05:
+            evf_label = "At Floor"
+        else:
+            evf_label = "Above Floor"
+    else:
+        avg_evf, evf_label = None, None
+
+    return {
+        "wallet_age_days": wallet_age_days,
+        "first_trade_ts": first_ts,
+        "trades_last_30d": trades_last_30d,
+        "total_trades": total,
+        "bot_score": {
+            "score": bot_ratio,
+            "label": bot_label,
+            "rapid_pairs": rapid_pairs,
+        },
+        "diamond_hands": dh,
+        "collector_style": {
+            "label": style_label,
+            "ratio": style_ratio,
+            "multi_count": multi_count,
+            "single_count": single_count,
+            "total_collections": total_cols,
+        },
+        "avg_entry_vs_floor": {
+            "ratio": avg_evf,
+            "collections_with_floor": len(entry_ratios),
+            "label": evf_label,
+        },
+    }
+
+
 # ── Formatters ────────────────────────────────────────────────────────────────
 
 def format_summary(analytics: dict, wallet_name: str = None,
