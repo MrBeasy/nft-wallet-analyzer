@@ -287,18 +287,48 @@ def compute_player_card(trades, per_collection, summary, floor_data):
     dh = _diamond_score(summary.get("avg_holding", 0))
     dh["avg_holding_secs"] = summary.get("avg_holding") or None
 
-    # Collector style
-    buying_cols = [c for c in per_collection.values() if c.get("buys", 0) > 0]
-    total_cols = len(buying_cols)
-    multi_count = sum(1 for c in buying_cols if c["buys"] > 1)
-    single_count = total_cols - multi_count
-    style_ratio = multi_count / total_cols if total_cols else 0.0
-    if style_ratio < 0.2:
-        style_label = "One-of-a-kind"
-    elif style_ratio < 0.6:
-        style_label = "Mixed"
+    # Collector style — based on simultaneous holding behaviour
+    buy_ts_list  = sorted(int(t["block_timestamp"]) for t in trades if t["side"] == "buy")
+    sell_ts_list = sorted(int(t["block_timestamp"]) for t in trades if t["side"] == "sell")
+
+    # Build a merged timeline; at equal timestamps sell first (release before acquire)
+    timeline = [(ts, 1) for ts in buy_ts_list] + [(ts, -1) for ts in sell_ts_list]
+    timeline.sort(key=lambda e: (e[0], e[1]))
+
+    holdings = 0
+    max_concurrent = 0
+    holdings_at_buy = []
+    for ts, delta in timeline:
+        if delta == 1:
+            holdings_at_buy.append(holdings)
+            holdings += 1
+        else:
+            holdings = max(0, holdings - 1)
+        if holdings > max_concurrent:
+            max_concurrent = holdings
+
+    avg_concurrent = sum(holdings_at_buy) / len(holdings_at_buy) if holdings_at_buy else 0.0
+
+    # Batch buys: buy events within 5 minutes of the next buy
+    BATCH_WINDOW = 300
+    batch_buys = sum(
+        1 for i in range(len(buy_ts_list) - 1)
+        if buy_ts_list[i + 1] - buy_ts_list[i] <= BATCH_WINDOW
+    ) if len(buy_ts_list) > 1 else 0
+    batch_sells = sum(
+        1 for i in range(len(sell_ts_list) - 1)
+        if sell_ts_list[i + 1] - sell_ts_list[i] <= BATCH_WINDOW
+    ) if len(sell_ts_list) > 1 else 0
+
+    total_buys_count = len(buy_ts_list)
+    batch_ratio = batch_buys / total_buys_count if total_buys_count else 0.0
+
+    if max_concurrent <= 1:
+        style_label = "Serial"
+    elif batch_ratio >= 0.2:
+        style_label = "Bulk Trader"
     else:
-        style_label = "Bulk Buyer"
+        style_label = "Accumulator"
 
     # Avg entry vs floor
     addr_to_slug = {}
@@ -346,10 +376,10 @@ def compute_player_card(trades, per_collection, summary, floor_data):
         "diamond_hands": dh,
         "collector_style": {
             "label": style_label,
-            "ratio": style_ratio,
-            "multi_count": multi_count,
-            "single_count": single_count,
-            "total_collections": total_cols,
+            "max_concurrent": max_concurrent,
+            "avg_concurrent": round(avg_concurrent, 1),
+            "batch_buys": batch_buys,
+            "batch_sells": batch_sells,
         },
         "avg_entry_vs_floor": {
             "ratio": avg_evf,

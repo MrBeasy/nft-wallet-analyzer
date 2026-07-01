@@ -1189,7 +1189,7 @@ function renderPlayerCard(pc, summary) {
 
   // Collector style
   const cs = pc.collector_style;
-  const csSub = cs.multi_count + ' bulk · ' + cs.single_count + ' single · ' + cs.total_collections + ' total';
+  const csSub = 'max ' + cs.max_concurrent + ' at once · ' + cs.batch_buys + ' batch buy' + (cs.batch_buys !== 1 ? 's' : '');
 
   // Settings values
   const flipperDays = _pcGet('dh_flipper_days', 7);
@@ -1228,7 +1228,7 @@ function renderPlayerCard(pc, summary) {
           <div class="pc-sub">${evfSub}</div>
         </div>
         <div class="pc-metric">
-          <div class="pc-lbl" data-tip="Based on how many collections this wallet bought into more than once. One-of-a-kind &lt;20%, Bulk Buyer &gt;60%">Collector Style</div>
+          <div class="pc-lbl" data-tip="Based on simultaneous holdings and batch activity. Serial = never holds more than 1 at a time. Bulk Trader = frequently buys multiple items within 5 minutes. Accumulator = builds positions gradually.">Collector Style</div>
           <div class="pc-val">${esc(cs.label)}</div>
           <div class="pc-sub">${esc(csSub)}</div>
         </div>
