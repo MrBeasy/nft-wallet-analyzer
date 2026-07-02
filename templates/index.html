@@ -183,6 +183,14 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
 .log-err{color:var(--red)}
 .log-done{color:var(--green)}
 
+/* ── Sync background toast ── */
+.sync-toast{position:fixed;bottom:24px;right:24px;background:var(--surface);
+  border:1px solid var(--border);border-radius:var(--r);padding:10px 16px;
+  display:flex;align-items:center;gap:12px;z-index:1100;
+  box-shadow:0 4px 20px rgba(0,0,0,.5);font-size:13px}
+.sync-toast-spin{display:inline-block;animation:spin .9s linear infinite;
+  font-style:normal;line-height:1}
+
 /* ── Notes field ── */
 .notes-wrap{display:flex;align-items:center;gap:6px;margin-top:6px}
 .notes-input{background:transparent;border:1px solid transparent;border-radius:var(--r2);
@@ -638,7 +646,7 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
 </main>
 
 <!-- ── Add/Sync modal ── -->
-<div id="m-add" class="moverlay" style="display:none" onclick="overlayClick(event,'m-add')">
+<div id="m-add" class="moverlay" style="display:none" onclick="overlayClickAdd(event)">
   <div class="modal modal-sm" onclick="event.stopPropagation()">
     <div id="m-add-form">
       <div class="modal-hdr">
@@ -662,6 +670,7 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
     <div id="m-add-progress" style="display:none">
       <div class="modal-hdr">
         <h3 id="prog-title">Syncing<span id="prog-dots">...</span></h3>
+        <button class="btn-close" id="prog-dismiss" onclick="dismissSyncModal()" title="Run in background">✕</button>
       </div>
       <div class="modal-body">
         <div id="sync-log" class="sync-log"></div>
@@ -671,6 +680,13 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
       </div>
     </div>
   </div>
+</div>
+
+<!-- ── Background sync toast ── -->
+<div id="sync-toast" class="sync-toast" style="display:none">
+  <i class="sync-toast-spin">⟳</i>
+  <span id="sync-toast-text">Syncing wallet…</span>
+  <button class="btn btn-outline" style="padding:3px 10px;font-size:12px" onclick="showSyncModal()">Show</button>
 </div>
 
 <!-- ── Collection detail modal ── -->
@@ -698,6 +714,7 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
 let currentWallet = null;
 let syncTarget = null;
 let syncAutoNavigate = false;
+let syncRunning = false;
 let reportCache = {};
 let tradesLoaded = false;
 let pnlChartLoaded = false;
@@ -1994,6 +2011,8 @@ function renderColDetailRow(row) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function openAddModal() {
+  syncRunning = false;
+  hideSyncToast();
   syncTarget = null;
   syncAutoNavigate = true;
   document.getElementById('m-add-form').style.display = '';
@@ -2047,6 +2066,7 @@ async function startSync() {
 }
 
 async function runSync(address, name) {
+  syncRunning = true;
   try {
     const res = await fetch('/api/sync', {
       method: 'POST',
@@ -2055,6 +2075,8 @@ async function runSync(address, name) {
     });
     if (!res.ok) {
       appendLog('HTTP ' + res.status, 'err');
+      syncRunning = false;
+      hideSyncToast();
       return;
     }
 
@@ -2075,17 +2097,25 @@ async function runSync(address, name) {
             const ev = JSON.parse(line.slice(6));
             if (ev.type === 'log')   appendLog(ev.message, 'ok');
             else if (ev.type === 'done') {
+              syncRunning = false;
               appendLog('✓ Sync complete!', 'done');
               document.getElementById('prog-title').textContent = 'Done!';
               syncTarget = ev.address;
               Object.keys(reportCache).filter(k => k.startsWith(ev.address + ':')).forEach(k => delete reportCache[k]);
-              walletCache = null; // invalidate so home list refreshes
-              if (syncAutoNavigate) {
+              walletCache = null;
+              const isMinimized = document.getElementById('sync-toast').style.display !== 'none';
+              hideSyncToast();
+              if (isMinimized) {
+                closeModal('m-add');
+                navigate(`/wallet/${syncTarget}`);
+              } else if (syncAutoNavigate) {
                 setTimeout(() => { closeModal('m-add'); navigate(`/wallet/${syncTarget}`); }, 600);
               } else {
                 document.getElementById('prog-foot').style.display = '';
               }
             } else if (ev.type === 'error') {
+              syncRunning = false;
+              hideSyncToast();
               appendLog('✗ ' + ev.message, 'err');
             }
           } catch {}
@@ -2093,6 +2123,8 @@ async function runSync(address, name) {
       }
     }
   } catch (e) {
+    syncRunning = false;
+    hideSyncToast();
     appendLog('Error: ' + e.message, 'err');
   }
 }
@@ -2120,6 +2152,33 @@ function goToSynced() {
 
 function closeModal(id) { document.getElementById(id).style.display = 'none'; }
 function overlayClick(e, id) { if (e.target.id === id) closeModal(id); }
+
+function overlayClickAdd(e) { if (e.target.id === 'm-add') dismissSyncModal(); }
+
+function dismissSyncModal() {
+  if (syncRunning) {
+    minimizeSyncModal();
+  } else {
+    closeModal('m-add');
+  }
+}
+
+function minimizeSyncModal() {
+  closeModal('m-add');
+  const addr = syncTarget || '';
+  const label = addr ? addr.slice(0, 6) + '…' + addr.slice(-4) : 'wallet';
+  document.getElementById('sync-toast-text').textContent = 'Syncing ' + label;
+  document.getElementById('sync-toast').style.display = '';
+}
+
+function showSyncModal() {
+  hideSyncToast();
+  document.getElementById('m-add').style.display = '';
+}
+
+function hideSyncToast() {
+  document.getElementById('sync-toast').style.display = 'none';
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Sortable table engine
