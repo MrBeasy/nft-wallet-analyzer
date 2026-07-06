@@ -615,7 +615,7 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
 <main id="view-benchmark" style="display:none">
   <div class="meta-page-hdr">
     <h1>Benchmark</h1>
-    <p>Compare a wallet's performance against all other tracked wallets in shared collections</p>
+    <p>Compare a wallet's performance against all other tracked wallets. Click a collection row to drill into that collection.</p>
   </div>
   <div class="meta-filters" style="align-items:flex-end">
     <div class="mf-group" style="flex:1;min-width:240px">
@@ -2930,6 +2930,50 @@ async function runBenchmark() {
   }
 }
 
+async function runBenchmarkForCollection(colAddr) {
+  const addrEl = document.getElementById('bm-addr');
+  const addr = addrEl.value.trim().toLowerCase();
+  if (!/^0x[0-9a-fA-F]{40}$/.test(addr)) return;
+
+  const btn = document.getElementById('bm-run-btn');
+  const loader = document.getElementById('bm-loader');
+  const results = document.getElementById('bm-results');
+  const status = document.getElementById('bm-status');
+
+  btn.disabled = true;
+  loader.style.display = '';
+  results.style.display = 'none';
+  status.textContent = '';
+  status.style.color = 'var(--muted)';
+
+  const t0 = Date.now();
+  try {
+    const url = `/api/benchmark?wallet=${encodeURIComponent(addr)}&days=${benchmarkDays}&collection=${encodeURIComponent(colAddr)}`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if (!res.ok) {
+      status.textContent = data.error || 'Error';
+      status.style.color = 'var(--red)';
+      loader.style.display = 'none';
+      return;
+    }
+    benchmarkCache = data;
+    const colName = data.collections[0]?.name || colAddr.slice(0, 10);
+    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+    status.textContent = `${colName} · ${elapsed}s`;
+    loader.style.display = 'none';
+    results.style.display = '';
+    renderBenchmarkSummary(data);
+    renderBenchmarkTable(data);
+  } catch (e) {
+    status.textContent = 'Failed: ' + e.message;
+    status.style.color = 'var(--red)';
+    loader.style.display = 'none';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 function renderBenchmarkSummary(data) {
   const ts = data.target_summary;
   const bs = data.basket_summary;
@@ -3005,13 +3049,21 @@ function renderBenchmarkSummary(data) {
   const wname  = esc(data.wallet.name || (data.wallet.address.slice(0,6) + '…' + data.wallet.address.slice(-4)));
   const bcount = bs.wallet_count;
 
+  let contextDesc;
+  if (data.collection_filter) {
+    const colName = esc(data.collections[0]?.name || data.collection_filter.slice(0, 10) + '…');
+    contextDesc = `in <span style="color:var(--text);font-weight:600">${colName}</span> vs ` +
+      `<span style="color:var(--text);font-weight:600">${bcount} wallet${bcount !== 1 ? 's' : ''}</span> who traded this collection`;
+  } else {
+    contextDesc = `against <span style="color:var(--text);font-weight:600">${bcount} other wallet${bcount !== 1 ? 's' : ''}</span> — all data` +
+      ` · ${data.collections.length} collection${data.collections.length !== 1 ? 's' : ''} shown below`;
+  }
+  if (data.timeframe_days) contextDesc += ` · last ${data.timeframe_days}d`;
+
   document.getElementById('bm-summary').innerHTML =
     `<div class="sc" style="grid-column:1/-1;background:transparent;border:none;padding:0 4px 0 0">` +
       `<div style="font-size:13px;color:var(--muted)">` +
-        `Comparing <span style="color:var(--text);font-weight:600">${wname}</span> against ` +
-        `<span style="color:var(--text);font-weight:600">${bcount} other wallet${bcount !== 1 ? 's' : ''}</span> ` +
-        `in ${data.collections.length} shared collection${data.collections.length !== 1 ? 's' : ''}` +
-        (data.timeframe_days ? ` · last ${data.timeframe_days}d` : '') +
+        `Comparing <span style="color:var(--text);font-weight:600">${wname}</span> ${contextDesc}` +
       `</div>` +
     `</div>` +
     cards.map(c =>
@@ -3050,10 +3102,18 @@ function renderBenchmarkTable(data) {
   const sortCol = prev ? prev.sortCol : 7;
   const sortDir = prev ? prev.sortDir : -1;
 
+  const backBtn = data.collection_filter
+    ? `<button class="fbtn" style="margin-left:auto" onclick="runBenchmark()">← All collections</button>`
+    : '';
+  const hintText = data.collection_filter
+    ? `vs ${data.basket_summary.wallet_count} wallet${data.basket_summary.wallet_count !== 1 ? 's' : ''} in this collection · click row to view collection`
+    : `vs ${data.basket_summary.wallet_count} other wallet${data.basket_summary.wallet_count !== 1 ? 's' : ''} · click a row to compare in that collection`;
+
   wrap.innerHTML = `
     <div class="tab-hdr" style="margin-bottom:10px">
       <span class="badge">${cols.length} collection${cols.length !== 1 ? 's' : ''}</span>
-      <span style="font-size:12px;color:var(--muted)">vs ${data.basket_summary.wallet_count} other wallet${data.basket_summary.wallet_count !== 1 ? 's' : ''} · click a row to explore</span>
+      <span style="font-size:12px;color:var(--muted)">${hintText}</span>
+      ${backBtn}
     </div>
     <div class="tbl-wrap">
       <table id="tbl-bm-collections">
@@ -3085,7 +3145,10 @@ function renderBenchmarkRow(row) {
   const fHold = v => v ? fmtDays(v) : '—';
   const fPnl = v => v != null ? (v >= 0 ? '+' : '') + v.toFixed(4) : '—';
 
-  return `<tr class="clickable" onclick="navigate('/collection/${esc(addr)}')">
+  const rowClick = (benchmarkCache && benchmarkCache.collection_filter)
+    ? `navigate('/collection/${esc(addr)}')`
+    : `runBenchmarkForCollection('${esc(addr)}')`;
+  return `<tr class="clickable" onclick="${rowClick}">
     <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(c.name || addr)}">${name}</td>
     <td class="tc">${wt.buys + wt.sells}</td>
     <td class="tc" style="color:var(--muted)">${bt.buys + bt.sells}</td>
