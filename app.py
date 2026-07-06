@@ -610,6 +610,9 @@ def api_benchmark():
     basket_all_ht: list = []
     basket_all_wins = 0
     basket_all_losses = 0
+    basket_all_open_count = 0
+    basket_all_cost_basis_open = 0.0
+    basket_open_data: list = []  # (cost, slug, fee_bps) per open position
 
     for bw in basket_wallets:
         with db.get_conn() as conn:
@@ -625,6 +628,15 @@ def api_benchmark():
         basket_all_buy_eth += bs.get("total_buy_eth", 0)
         basket_all_pnl += bs.get("realized_pnl_eth", 0)
         basket_all_trades += bs.get("total_trades", 0)
+        basket_all_open_count += bs.get("open_positions", 0)
+        basket_all_cost_basis_open += bs.get("open_cost_basis_eth", 0)
+        for _buys in (bw_stats.get("open_positions") or {}).values():
+            for _b in _buys:
+                basket_open_data.append((
+                    _b.get("eth_amount", 0) + (_b.get("gas_eth") or 0),
+                    _b.get("collection_slug"),
+                    _b.get("total_fee_bps") or 0,
+                ))
 
         for col_addr, cs in bw_stats["per_collection"].items():
             basket_all_wins += cs.get("wins", 0)
@@ -703,8 +715,36 @@ def api_benchmark():
             "basket": basket_col,
         })
 
-    # Target summary
+    # Inventory / uPnL — cached floor prices only, no live fetches
+    target_open_data = []
+    for _buys in (target_stats.get("open_positions") or {}).values():
+        for _b in _buys:
+            target_open_data.append((
+                _b.get("eth_amount", 0) + (_b.get("gas_eth") or 0),
+                _b.get("collection_slug"),
+                _b.get("total_fee_bps") or 0,
+            ))
+
+    _all_slugs = {slug for _, slug, _ in target_open_data + basket_open_data if slug}
+    _cached_floors = {}
+    if _all_slugs:
+        with db.get_conn() as conn:
+            _cached_floors = db.get_cached_floors(conn, list(_all_slugs))
+
+    def _floor_upnl(open_data, cost_basis):
+        floor_val = sum(
+            _cached_floors[slug].get("floor_price_eth", 0) * (1 - fee_bps / 10000)
+            for _, slug, fee_bps in open_data
+            if slug and slug in _cached_floors and _cached_floors[slug].get("floor_price_eth")
+        )
+        return round(floor_val - cost_basis, 4) if floor_val > 0 else None
+
     s = target_stats["summary"]
+    target_open_cost = s.get("open_cost_basis_eth", 0)
+    target_upnl = _floor_upnl(target_open_data, target_open_cost)
+    basket_upnl = _floor_upnl(basket_open_data, basket_all_cost_basis_open)
+
+    # Target summary
     target_summary = {
         "total_trades": s["total_trades"],
         "total_buy_eth": round(s["total_buy_eth"], 4),
@@ -712,6 +752,9 @@ def api_benchmark():
         "roi": round(s["roi"] * 100, 2) if s.get("total_buy_eth") else None,
         "avg_holding_secs": round(s["avg_holding"], 1) if s.get("avg_holding") else None,
         "win_rate": round(s["win_rate"] * 100, 1) if s.get("win_rate") is not None else None,
+        "open_positions": s.get("open_positions", 0),
+        "open_cost_basis_eth": round(target_open_cost, 4),
+        "upnl_eth": target_upnl,
     }
 
     # Basket summary — uses all trades across all collections (full data)
@@ -724,6 +767,9 @@ def api_benchmark():
         "win_rate": round(basket_all_wins / (basket_all_wins + basket_all_losses) * 100, 1)
                     if (basket_all_wins + basket_all_losses) > 0 else None,
         "wallet_count": len(basket_wallets),
+        "open_positions": basket_all_open_count,
+        "open_cost_basis_eth": round(basket_all_cost_basis_open, 4),
+        "upnl_eth": basket_upnl,
     }
 
     with db.get_conn() as conn:

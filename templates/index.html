@@ -3044,6 +3044,24 @@ function renderBenchmarkSummary(data) {
       cls: holdDelta == null ? '' : holdDelta < 0 ? 'pos' : holdDelta > 0 ? 'neg' : '',
       sub: fSub(fmtDays(ts.avg_holding_secs), fmtDays(bs.avg_holding_secs)),
     },
+    {
+      lbl: 'Inventory',
+      big: (ts.open_positions || 0) + ' items',
+      cls: '',
+      sub: fSub(
+        (ts.open_positions || 0) + ' · ' + (ts.open_cost_basis_eth || 0).toFixed(3) + ' ETH',
+        (bs.open_positions || 0) + ' · ' + (bs.open_cost_basis_eth || 0).toFixed(3) + ' ETH'
+      ),
+    },
+    {
+      lbl: 'uPnL (Floor)',
+      big: ts.upnl_eth != null ? fmtPnl(ts.upnl_eth) : '—',
+      cls: ts.upnl_eth != null ? posneg(ts.upnl_eth) : '',
+      sub: fSub(
+        ts.upnl_eth != null ? fmtPnl(ts.upnl_eth) : '—',
+        bs.upnl_eth != null ? fmtPnl(bs.upnl_eth) : '—'
+      ),
+    },
   ];
 
   const wname  = esc(data.wallet.name || (data.wallet.address.slice(0,6) + '…' + data.wallet.address.slice(-4)));
