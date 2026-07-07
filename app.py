@@ -184,6 +184,7 @@ def api_trades(address):
 def api_pnl_buckets(address):
     address = address.lower()
     since = request.args.get("since", type=int, default=0)
+    collection = (request.args.get("collection") or "").strip().lower()
     db.init_db()
     with db.get_conn() as conn:
         if since:
@@ -198,6 +199,8 @@ def api_pnl_buckets(address):
 
     buckets_map = {}
     for m in matched:
+        if collection and m["collection_address"] != collection:
+            continue
         _add_daily_bucket(buckets_map, m)
 
     buckets = sorted(buckets_map.values(), key=lambda b: b["key"])

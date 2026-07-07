@@ -705,19 +705,31 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
   <button class="btn btn-outline" style="padding:3px 10px;font-size:12px" onclick="showSyncModal()">Show</button>
 </div>
 
-<!-- ── Collection detail modal ── -->
+<!-- ── Wallet × Collection detail modal ── -->
 <div id="m-col" class="moverlay" style="display:none" onclick="overlayClick(event,'m-col')">
   <div class="modal modal-lg" onclick="event.stopPropagation()">
     <div class="modal-hdr">
       <div>
         <h3 id="col-name" style="margin-bottom:2px"></h3>
         <span id="col-addr" class="mono" style="font-size:11px;color:var(--muted)"></span>
+        <a id="col-wallet-link" href="#" class="mono" style="display:none;font-size:11px;color:var(--blue);text-decoration:none;margin-left:10px"></a>
       </div>
       <button class="btn-close" onclick="closeModal('m-col')">✕</button>
     </div>
     <div id="col-stats" class="col-stats"></div>
+    <div class="tabs-wrap" style="padding:0 20px;margin-bottom:0">
+      <div class="tabs">
+        <button class="tab active" id="mcol-tab-pnl" onclick="switchMcolTab('pnl')">PnL Chart</button>
+        <button class="tab" id="mcol-tab-trades" onclick="switchMcolTab('trades')">Trades</button>
+      </div>
+    </div>
     <div class="modal-body-scroll">
-      <div id="col-trades-wrap"></div>
+      <div id="col-trades-wrap" style="display:none"></div>
+      <div id="wc-pnl-pane" style="position:relative">
+        <div id="wc-pnl-loader" class="loader"><div class="spinner"></div></div>
+        <div id="wc-pnl-inner" style="display:none"></div>
+        <div id="wc-pnl-tooltip" class="graph-tooltip hidden"></div>
+      </div>
     </div>
   </div>
 </div>
@@ -732,11 +744,16 @@ let syncTarget = null;
 let syncAutoNavigate = false;
 let syncRunning = false;
 let reportCache = {};
+const floorCache = {};     // {address: floor_prices} from /api/floor, keyed by slug
 let tradesLoaded = false;
 let pnlChartLoaded = false;
 const pnlCache = {};
 let colPnlLoaded = false;
 const colPnlCache = {};
+let mcolCtx = null;        // {wallet, collection, since} for the wallet × collection modal
+let wcPnlKey = null;       // cache key of the chart currently rendered in the modal
+const wcPnlCache = {};
+let colDetailWallets = {}; // wallet_address -> row from /api/collection (for modal entry)
 let colDetailDays = 0;
 let detailDays = 0; // 0 = all time; cache key = address + ':' + days
 let walletCache = null;
@@ -1315,8 +1332,25 @@ function renderCollectionsPane(data) {
   const cols = Object.entries(data.per_collection);
   if (!cols.length) { pane.innerHTML = '<div class="no-data">No collection data.</div>'; return; }
 
-  // Build sort rows: [name, buys, sells, buyEth, sellEth, feesEth, feeBps, pnl, roi, avgHold, open, lastTs, firstTs, addr, s]
-  // Indices 0-12 map 1:1 to the 13 visible columns so clicking any header sorts the right field.
+  // Per-collection uPnL from open positions × cached floor prices (null until
+  // /api/floor responds and for positions whose slug has no floor price).
+  const floors = floorCache[data.wallet.address];
+  const upnlByCol = {};
+  if (floors) {
+    for (const [key, buys] of Object.entries(data.open_positions || {})) {
+      const colAddr = key.split(':')[0];
+      for (const b of buys) {
+        const floor = b.collection_slug != null ? floors[b.collection_slug] : undefined;
+        if (floor == null) continue;
+        const net = floor * (1 - (b.total_fee_bps || 0) / 10000);
+        const cost = b.eth_amount + (b.gas_eth || 0);
+        upnlByCol[colAddr] = (upnlByCol[colAddr] || 0) + net - cost;
+      }
+    }
+  }
+
+  // Build sort rows: [name, buys, sells, buyEth, sellEth, feesEth, feeBps, pnl, upnl, roi, avgHold, open, lastTs, firstTs, addr, s]
+  // Indices 0-13 map 1:1 to the 14 visible columns so clicking any header sorts the right field.
   const rows = cols.map(([addr, s]) => [
     (s.name || addr).toLowerCase(),        // [0]  Collection
     s.buys || 0,                           // [1]  Buys
@@ -1325,25 +1359,26 @@ function renderCollectionsPane(data) {
     s.sell_eth || 0,                       // [4]  Rcvd ETH
     s.fees_eth || 0,                       // [5]  Fees ETH
     s.total_fee_bps || 0,                  // [6]  Fee %
-    s.realized_pnl || 0,                   // [7]  PnL ETH
-    s.roi != null ? s.roi * 100 : null,    // [8]  ROI
-    s.avg_holding_secs || 0,              // [9]  Avg Hold
-    s.open_positions || 0,                 // [10] Open
-    s.last_trade_ts || 0,                  // [11] Last Trade
-    s.first_trade_ts || 0,                 // [12] First Traded
-    addr,                                  // [13] metadata
-    s,                                     // [14] full stats
+    s.realized_pnl || 0,                   // [7]  rPnL
+    upnlByCol[addr] ?? null,               // [8]  uPnL (Floor)
+    s.roi != null ? s.roi * 100 : null,    // [9]  ROI
+    s.avg_holding_secs || 0,              // [10] Avg Hold
+    s.open_positions || 0,                 // [11] Open
+    s.last_trade_ts || 0,                  // [12] Last Trade
+    s.first_trade_ts || 0,                 // [13] First Traded
+    addr,                                  // [14] metadata
+    s,                                     // [15] full stats
   ]);
 
   pane.innerHTML = `
     <div class="tab-hdr">
       <span class="badge">${cols.length} collections</span>
-      <span style="font-size:12px;color:var(--muted)">Click a row to explore trades</span>
+      <span style="font-size:12px;color:var(--muted)">Click a row for PnL chart &amp; trades</span>
     </div>
     <div class="tbl-wrap">
       <table id="tbl-collections">
         <thead><tr>
-          ${makeHeaders('collections', ['Collection','Buys','Sells','Spent ETH','Rcvd ETH','Fees ETH','Fee %','PnL ETH','ROI','Avg Hold','Open','Last Trade','First Traded'], 7, -1)}
+          ${makeHeaders('collections', ['Collection','Buys','Sells','Spent ETH','Rcvd ETH','Fees ETH','Fee %','rPnL','uPnL (Floor)','ROI','Avg Hold','Open','Last Trade','First Traded'], 7, -1)}
         </tr></thead>
         <tbody></tbody>
       </table>
@@ -1353,9 +1388,10 @@ function renderCollectionsPane(data) {
 }
 
 function renderColRow(row) {
-  const [,,, , , , feeBps, pnl, roi, avgHold, open, lastTs, firstTs, addr, s] = row;
+  const [,,, , , , feeBps, pnl, upnl, roi, avgHold, open, lastTs, firstTs, addr, s] = row;
   const name = esc((s.name || addr).slice(0,30));
   const pnlCls = pnl > 0 ? 'pos' : pnl < 0 ? 'neg' : '';
+  const upnlCls = upnl > 0 ? 'pos' : upnl < 0 ? 'neg' : '';
   const roiCls = roi > 0 ? 'pos' : roi < 0 ? 'neg' : '';
   const roiTxt = roi != null ? (roi >= 0 ? '+' : '') + roi.toFixed(1) + '%' : '—';
   const hold = avgHold ? fmtDays(avgHold) : '—';
@@ -1369,6 +1405,7 @@ function renderColRow(row) {
     <td class="mono tr">${(s.fees_eth||0).toFixed(4)}</td>
     <td class="tc">${feePct}</td>
     <td class="mono tr pnl-cell ${pnlCls}">${fmtPnl(pnl)}</td>
+    <td class="mono tr pnl-cell ${upnlCls}">${fmtPnl(upnl)}</td>
     <td class="mono tr pnl-cell ${roiCls}">${roiTxt}</td>
     <td class="tc">${hold}</td>
     <td class="tc">${open}</td>
@@ -1836,43 +1873,133 @@ function switchTab(name, btn) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Collection detail modal
+// Wallet × Collection detail modal (PnL chart + trades)
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function openCollection(collAddr) {
+// Entry from Wallet detail view: click a collection row
+function openCollection(collAddr) {
   const report = reportCache[currentWallet + ':' + detailDays];
   if (!report) return;
   const s = report.per_collection[collAddr] || {};
-
-  document.getElementById('col-name').textContent = s.name || collAddr.slice(0,12)+'...';
-  document.getElementById('col-addr').textContent = collAddr;
+  const since = detailDays > 0 ? Math.floor(Date.now() / 1000) - detailDays * 86400 : 0;
 
   const pnlCls = (s.realized_pnl||0) >= 0 ? 'pos' : 'neg';
-  document.getElementById('col-stats').innerHTML = [
-    { lbl:'PnL', val: fmtPnl(s.realized_pnl||0), cls: pnlCls },
-    { lbl:'Buys', val: s.buys||0 },
-    { lbl:'Sells', val: s.sells||0 },
-    { lbl:'Spent', val: (s.buy_eth||0).toFixed(3)+' ETH' },
-    { lbl:'Received', val: (s.sell_eth||0).toFixed(3)+' ETH' },
-    { lbl:'Fees', val: (s.fees_eth||0).toFixed(4)+' ETH' },
-    { lbl:'Fee %', val: s.total_fee_bps ? (s.total_fee_bps/100).toFixed(1)+'%' : '—' },
-    { lbl:'Avg Hold', val: fmtDays(s.avg_holding_secs) },
-    { lbl:'Open', val: s.open_positions||0 },
-  ].map(c => `<div class="mini-sc">
+  openWalletColModal({
+    wallet: currentWallet,
+    collection: collAddr,
+    since,
+    title: s.name || collAddr.slice(0,12)+'...',
+    stats: [
+      { lbl:'PnL', val: fmtPnl(s.realized_pnl||0), cls: pnlCls },
+      { lbl:'Buys', val: s.buys||0 },
+      { lbl:'Sells', val: s.sells||0 },
+      { lbl:'Spent', val: (s.buy_eth||0).toFixed(3)+' ETH' },
+      { lbl:'Received', val: (s.sell_eth||0).toFixed(3)+' ETH' },
+      { lbl:'Fees', val: (s.fees_eth||0).toFixed(4)+' ETH' },
+      { lbl:'Fee %', val: s.total_fee_bps ? (s.total_fee_bps/100).toFixed(1)+'%' : '—' },
+      { lbl:'Avg Hold', val: fmtDays(s.avg_holding_secs) },
+      { lbl:'Open', val: s.open_positions||0 },
+    ],
+  });
+}
+
+// Entry from Collection detail view: click a wallet row
+function openColWalletPnl(walletAddr) {
+  const w = colDetailWallets[walletAddr];
+  if (!w || !currentCollection) return;
+  const since = colDetailDays > 0 ? Math.floor(Date.now() / 1000) - colDetailDays * 86400 : 0;
+
+  const pnlCls = (w.realized_pnl||0) >= 0 ? 'pos' : 'neg';
+  openWalletColModal({
+    wallet: walletAddr,
+    collection: currentCollection,
+    since,
+    title: document.getElementById('col-detail-name').textContent,
+    walletLabel: w.wallet_name || null,
+    showWalletLink: true,
+    stats: [
+      { lbl:'PnL', val: fmtPnl(w.realized_pnl||0), cls: pnlCls },
+      { lbl:'ROI', val: fmtRoi(w.roi_pct) },
+      { lbl:'Trades', val: w.trades||0 },
+      { lbl:'Buys', val: w.buys||0 },
+      { lbl:'Sells', val: w.sells||0 },
+      { lbl:'First Traded', val: w.first_trade_ts ? fmtDate(w.first_trade_ts) : '—' },
+      { lbl:'Last Traded', val: w.last_trade_ts ? fmtDate(w.last_trade_ts) : '—' },
+    ],
+  });
+}
+
+function openWalletColModal({ wallet, collection, since, title, stats, walletLabel = null, showWalletLink = false }) {
+  mcolCtx = { wallet, collection, since };
+  document.getElementById('col-name').textContent = title;
+  document.getElementById('col-addr').textContent = collection;
+
+  const link = document.getElementById('col-wallet-link');
+  if (showWalletLink) {
+    link.style.display = '';
+    link.textContent = (walletLabel || wallet.slice(0,8)+'…'+wallet.slice(-4)) + ' →';
+    link.onclick = e => { e.preventDefault(); closeModal('m-col'); navigate('/wallet/' + wallet); };
+  } else {
+    link.style.display = 'none';
+  }
+
+  document.getElementById('col-stats').innerHTML = stats.map(c => `<div class="mini-sc">
     <div class="mini-lbl">${c.lbl}</div>
     <div class="mini-val ${c.cls||''}">${c.val}</div>
   </div>`).join('');
 
+  loadMcolTrades();
+  switchMcolTab('pnl');
+  document.getElementById('m-col').style.display = '';
+}
+
+function switchMcolTab(name) {
+  document.getElementById('mcol-tab-pnl').classList.toggle('active', name === 'pnl');
+  document.getElementById('mcol-tab-trades').classList.toggle('active', name === 'trades');
+  document.getElementById('wc-pnl-pane').style.display = name === 'pnl' ? '' : 'none';
+  document.getElementById('col-trades-wrap').style.display = name === 'trades' ? '' : 'none';
+  if (name === 'pnl') loadWcPnlPane();
+}
+
+// PnL chart for one wallet in one collection — when was the PnL achieved
+async function loadWcPnlPane() {
+  if (!mcolCtx) return;
+  const { wallet, collection, since } = mcolCtx;
+  const cacheKey = wallet + ':' + collection + ':' + since;
+  if (wcPnlKey === cacheKey) return; // already rendered for this context
+  wcPnlKey = cacheKey;
+
+  const opts = { loaderId: 'wc-pnl-loader', innerId: 'wc-pnl-inner', tooltipId: 'wc-pnl-tooltip', paneId: 'wc-pnl-pane' };
+  const loader = document.getElementById('wc-pnl-loader');
+  loader.innerHTML = '<div class="spinner"></div>';
+  loader.style.display = '';
+  document.getElementById('wc-pnl-inner').style.display = 'none';
+  if (wcPnlCache[cacheKey]) { renderPnlChart(wcPnlCache[cacheKey], opts); return; }
+
+  const url = `/api/pnl_buckets/${wallet}?collection=${encodeURIComponent(collection)}${since ? '&since=' + since : ''}`;
+  try {
+    const data = await fetch(url).then(r => r.json());
+    wcPnlCache[cacheKey] = data;
+    if (wcPnlKey !== cacheKey) return; // modal context changed while fetching
+    renderPnlChart(data, opts);
+  } catch {
+    if (wcPnlKey !== cacheKey) return;
+    wcPnlKey = null;
+    loader.innerHTML = '<p style="color:var(--muted);text-align:center">Failed to load chart.</p>';
+  }
+}
+
+async function loadMcolTrades() {
+  const { wallet, collection, since } = mcolCtx;
   document.getElementById('col-trades-wrap').innerHTML =
     '<div class="loader"><div class="spinner"></div></div>';
-  document.getElementById('m-col').style.display = '';
 
   try {
-    const since = detailDays > 0 ? Math.floor(Date.now() / 1000) - detailDays * 86400 : 0;
     const sinceParam = since ? '&since=' + since : '';
     const trades = await fetch(
-      `/api/trades/${currentWallet}?collection=${encodeURIComponent(collAddr)}${sinceParam}`
+      `/api/trades/${wallet}?collection=${encodeURIComponent(collection)}${sinceParam}`
     ).then(r => r.json());
+    if (!mcolCtx || mcolCtx.wallet !== wallet || mcolCtx.collection !== collection) return;
 
     // rows: [ts, side, ethAmt, gasEth, nftId, txHash, t]
     const rows = trades.map(t => [
@@ -2107,6 +2234,8 @@ async function loadCollection(addr) {
     document.getElementById('col-detail-content').style.display = '';
 
     const wallets = data.wallets || [];
+    colDetailWallets = {};
+    wallets.forEach(w => { colDetailWallets[w.wallet_address] = w; });
     if (!wallets.length) {
       document.getElementById('col-detail-table-wrap').innerHTML = '<div class="no-data">No wallet data.</div>';
       return;
@@ -2126,6 +2255,10 @@ async function loadCollection(addr) {
     ]);
 
     document.getElementById('col-detail-table-wrap').innerHTML = `
+      <div class="tab-hdr">
+        <span class="badge">${wallets.length} wallets</span>
+        <span style="font-size:12px;color:var(--muted)">Click a row for that wallet's PnL chart in this collection</span>
+      </div>
       <div class="tbl-wrap">
         <table id="tbl-col-detail">
           <thead><tr>
@@ -2150,7 +2283,7 @@ function renderColDetailRow(row) {
   const label = w.wallet_name || short;
   const pnlCls = pnl > 0 ? 'pos' : pnl < 0 ? 'neg' : '';
   const roiCls = roi_pct > 0 ? 'pos' : roi_pct < 0 ? 'neg' : '';
-  return `<tr class="clickable" onclick="navigate('/wallet/${esc(w.wallet_address)}')">
+  return `<tr class="clickable" onclick="openColWalletPnl('${esc(w.wallet_address)}')">
     <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
         title="${esc(w.wallet_name || w.wallet_address)}">${esc(label)}</td>
     <td class="tc">${trades}</td>
@@ -2345,7 +2478,7 @@ function makeHeaders(tableId, labels, defaultCol, defaultDir) {
   return labels.map((lbl, i) => {
     const alignCls = (i === labels.length - 1 && lbl === 'Tx') ? '' :
       ['Buys','Sells','Fee %','Avg Hold','Open','Win Rate','Trades','Collections','Last Synced','#','Total Trades','Your Trades','Others Trades','Your Hold','Others Hold'].includes(lbl) ? 'tc' :
-      ['Spent ETH','Rcvd ETH','Fees ETH','PnL ETH','ROI','ETH','Gas ETH','Cost ETH','Volume (USD)','Your ROI','Others ROI','Your PnL','Others PnL'].includes(lbl) ? 'tr' : '';
+      ['Spent ETH','Rcvd ETH','Fees ETH','PnL ETH','rPnL','uPnL (Floor)','ROI','ETH','Gas ETH','Cost ETH','Volume (USD)','Your ROI','Others ROI','Your PnL','Others PnL'].includes(lbl) ? 'tr' : '';
     return `<th class="${alignCls}" onclick="onThClick('${tableId}',${i})">${lbl}</th>`;
   }).join('');
 }
@@ -2428,6 +2561,13 @@ async function saveNotes() {
 async function fetchFloorData(address) {
   try {
     const data = await fetch(`/api/floor/${address}`).then(r => r.json());
+
+    // Cache floors and refresh the collections table so its uPnL column fills in
+    if (data.floor_prices && Object.keys(data.floor_prices).length) {
+      floorCache[address] = data.floor_prices;
+      const rep = reportCache[currentWallet + ':' + detailDays];
+      if (rep && rep.wallet.address === address) renderCollectionsPane(rep);
+    }
 
     const elFloor = document.getElementById('sc-upnl');
     if (elFloor) {
