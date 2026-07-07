@@ -1619,6 +1619,14 @@ function renderPnlChart(data, { loaderId = 'pnl-loader', innerId = 'pnl-inner', 
     // Cumulative PnL within the selected window (restarts at 0 when brushing)
     let cum = 0;
     out.forEach(b => { cum += b.pnl_eth; b.cum_eth = cum; });
+    // Trailing bucket covering the current (unfinished) period: linear run-rate
+    // projection, skipped when <5% of the period has elapsed (too noisy)
+    const last = out[out.length - 1];
+    const now = Date.now() / 1000, spanEnd = last.ts1 + DAY;
+    if (now > last.ts0 && now < spanEnd) {
+      const frac = (now - last.ts0) / (spanEnd - last.ts0);
+      if (frac >= 0.05) { last.proj_eth = last.pnl_eth / frac; last.proj_frac = frac; }
+    }
     return out;
   }
 
@@ -1637,7 +1645,7 @@ function renderPnlChart(data, { loaderId = 'pnl-loader', innerId = 'pnl-inner', 
     barStep = plotW / N;
     const barW = Math.min(36, Math.max(1, barStep * 0.72));
 
-    const maxAbs = Math.max(...buckets.map(b => Math.abs(b.pnl_eth)), 0.0001);
+    const maxAbs = Math.max(...buckets.map(b => Math.max(Math.abs(b.pnl_eth), Math.abs(b.proj_eth || 0))), 0.0001);
     const yS = (plotH / 2) / maxAbs;
 
     // Secondary (right) scale for the cumulative line, zero-aligned with the bars
@@ -1684,6 +1692,14 @@ function renderPnlChart(data, { loaderId = 'pnl-loader', innerId = 'pnl-inner', 
         by = y0;
       }
       s += `<rect x="${bx.toFixed(1)}" y="${by.toFixed(1)}" width="${barW.toFixed(1)}" height="${bh.toFixed(1)}" fill="${color}" rx="2" data-i="${i}"/>`;
+      // Projected remainder of the current period: translucent dashed extension
+      if (b.proj_eth !== undefined) {
+        const extra = Math.abs(b.proj_eth - b.pnl_eth) * yS;
+        if (extra > 1) {
+          const py = pnl >= 0 ? by - extra : by + bh;
+          s += `<rect x="${bx.toFixed(1)}" y="${py.toFixed(1)}" width="${barW.toFixed(1)}" height="${extra.toFixed(1)}" fill="${color}" fill-opacity=".28" stroke="${color}" stroke-width="1" stroke-dasharray="3 3" rx="2" pointer-events="none"/>`;
+        }
+      }
     });
 
     // Cumulative PnL line (right axis scale), drawn on top of the bars
@@ -1728,6 +1744,7 @@ function renderPnlChart(data, { loaderId = 'pnl-loader', innerId = 'pnl-inner', 
       tooltip.innerHTML = `
         <div style="font-weight:600;margin-bottom:4px">${title}</div>
         <div class="${pnlCls}" style="font-family:var(--mono)">${fmtPnl(b.pnl_eth)}</div>
+        ${b.proj_eth !== undefined ? `<div style="font-family:var(--mono);color:var(--muted)">proj. <span class="${b.proj_eth >= 0 ? 'pos' : 'neg'}">${fmtPnl(b.proj_eth)}</span> (${Math.round(b.proj_frac * 100)}% elapsed)</div>` : ''}
         <div style="font-family:var(--mono);color:#60a5fa">&Sigma; ${fmtPnl(b.cum_eth)}</div>
         <div style="color:var(--muted);font-size:11px">${b.trade_count} trade${b.trade_count !== 1 ? 's' : ''}</div>`;
       tooltip.classList.remove('hidden');
