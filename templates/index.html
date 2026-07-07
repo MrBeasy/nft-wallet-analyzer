@@ -1579,12 +1579,15 @@ function renderPnlChart(data, { loaderId = 'pnl-loader', innerId = 'pnl-inner', 
       for (let j = i; j <= end; j++) { pnl += days[j].pnl; count += days[j].count; }
       out.push({ ts0: days[i].ts, ts1: days[end].ts, pnl_eth: pnl, trade_count: count });
     }
+    // Cumulative PnL within the selected window (restarts at 0 when brushing)
+    let cum = 0;
+    out.forEach(b => { cum += b.pnl_eth; b.cum_eth = cum; });
     return out;
   }
 
   // Layout constants
   const W = 900, H = 300;
-  const PL = 72, PR = 20, PT = 24, PB = 54;
+  const PL = 72, PR = 64, PT = 24, PB = 54;
   const plotW = W - PL - PR, plotH = H - PT - PB;
   const y0 = PT + plotH / 2; // zero line
 
@@ -1599,6 +1602,11 @@ function renderPnlChart(data, { loaderId = 'pnl-loader', innerId = 'pnl-inner', 
 
     const maxAbs = Math.max(...buckets.map(b => Math.abs(b.pnl_eth)), 0.0001);
     const yS = (plotH / 2) / maxAbs;
+
+    // Secondary (right) scale for the cumulative line, zero-aligned with the bars
+    const maxAbsCum = Math.max(...buckets.map(b => Math.abs(b.cum_eth)), 0.0001);
+    const yS2 = (plotH / 2) / maxAbsCum;
+    const LINE = '#60a5fa';
 
     // Y axis ticks (symmetric around 0)
     const ticks = niceAxisTicks(-maxAbs, maxAbs, 7);
@@ -1617,6 +1625,13 @@ function renderPnlChart(data, { loaderId = 'pnl-loader', innerId = 'pnl-inner', 
       s += `<text x="${PL - 6}" y="${y + 4}" text-anchor="end" font-size="11" fill="var(--muted)">${lbl}</text>`;
     });
 
+    // Right Y axis labels for the cumulative line (no extra grid lines)
+    niceAxisTicks(-maxAbsCum, maxAbsCum, 7).forEach(v => {
+      const y = y0 - v * yS2;
+      const lbl = v === 0 ? '0' : (v > 0 ? '+' : '') + v.toFixed(3);
+      s += `<text x="${PL + plotW + 6}" y="${y + 4}" text-anchor="start" font-size="11" fill="${LINE}">${lbl}</text>`;
+    });
+
     // Bars
     buckets.forEach((b, i) => {
       const cx = PL + (i + 0.5) * barStep;
@@ -1633,6 +1648,20 @@ function renderPnlChart(data, { loaderId = 'pnl-loader', innerId = 'pnl-inner', 
       }
       s += `<rect x="${bx.toFixed(1)}" y="${by.toFixed(1)}" width="${barW.toFixed(1)}" height="${bh.toFixed(1)}" fill="${color}" rx="2" data-i="${i}"/>`;
     });
+
+    // Cumulative PnL line (right axis scale), drawn on top of the bars
+    if (N === 1) {
+      const cy = y0 - buckets[0].cum_eth * yS2;
+      s += `<circle cx="${(PL + 0.5 * barStep).toFixed(1)}" cy="${cy.toFixed(1)}" r="3.5" fill="${LINE}" pointer-events="none"/>`;
+    } else {
+      let lp = '';
+      buckets.forEach((b, i) => {
+        const x = PL + (i + 0.5) * barStep;
+        const y = y0 - b.cum_eth * yS2;
+        lp += `${i ? 'L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`;
+      });
+      s += `<path d="${lp}" fill="none" stroke="${LINE}" stroke-width="2" stroke-linejoin="round" pointer-events="none"/>`;
+    }
 
     // X labels (rotated)
     buckets.forEach((b, i) => {
@@ -1662,6 +1691,7 @@ function renderPnlChart(data, { loaderId = 'pnl-loader', innerId = 'pnl-inner', 
       tooltip.innerHTML = `
         <div style="font-weight:600;margin-bottom:4px">${title}</div>
         <div class="${pnlCls}" style="font-family:var(--mono)">${fmtPnl(b.pnl_eth)}</div>
+        <div style="font-family:var(--mono);color:#60a5fa">&Sigma; ${fmtPnl(b.cum_eth)}</div>
         <div style="color:var(--muted);font-size:11px">${b.trade_count} trade${b.trade_count !== 1 ? 's' : ''}</div>`;
       tooltip.classList.remove('hidden');
       const paneRect = document.getElementById(paneId).getBoundingClientRect();
