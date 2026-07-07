@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS trades (
 CREATE INDEX IF NOT EXISTS idx_trades_wallet    ON trades(wallet_address);
 CREATE INDEX IF NOT EXISTS idx_trades_collection ON trades(collection_address);
 CREATE INDEX IF NOT EXISTS idx_trades_nft       ON trades(collection_address, nft_id);
+CREATE INDEX IF NOT EXISTS idx_trades_wallet_ts ON trades(wallet_address, block_timestamp);
 
 CREATE TABLE IF NOT EXISTS sync_state (
     wallet_address      TEXT PRIMARY KEY,

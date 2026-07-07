@@ -81,6 +81,9 @@ def compute_analytics(trades: list) -> dict:
     if not trades:
         return {}
 
+    # Convert sqlite3.Row to dict once up front; every loop below indexes freely.
+    trades = [dict(t) for t in trades]
+
     # Separate buys and sells
     buys_by_nft = defaultdict(list)   # key: (collection_address, nft_id)
     sells_by_nft = defaultdict(list)
@@ -89,16 +92,19 @@ def compute_analytics(trades: list) -> dict:
     total_buy_eth = 0.0
     total_sell_eth = 0.0
     total_gas_eth = 0.0
+    total_buys_count = 0
+    total_sells_count = 0
 
-    for t in trades:
-        row = dict(t)
+    for row in trades:
         key = (row["collection_address"], row["nft_id"])
         if row["side"] == "buy":
             buys_by_nft[key].append(row)
             total_buy_eth += row["eth_amount"]
+            total_buys_count += 1
         else:
             sells_by_nft[key].append(row)
             total_sell_eth += row["eth_amount"]
+            total_sells_count += 1
         total_gas_eth += row.get("gas_eth", 0) or 0
 
     # FIFO match per NFT
@@ -158,8 +164,7 @@ def compute_analytics(trades: list) -> dict:
 
     unmatched_sell_keys = {(u["collection_address"], u["nft_id"]) for u in all_unmatched_sells}
 
-    for t in trades:
-        row = dict(t)
+    for row in trades:
         col = row["collection_address"]
         col_stats[col]["name"] = row.get("collection_name") or row.get("collection_slug", col[:10])
         col_stats[col]["total_fee_bps"] = row.get("total_fee_bps") or 0
@@ -213,8 +218,8 @@ def compute_analytics(trades: list) -> dict:
     return {
         "summary": {
             "total_trades": len(trades),
-            "total_buys": sum(1 for t in trades if dict(t)["side"] == "buy"),
-            "total_sells": sum(1 for t in trades if dict(t)["side"] == "sell"),
+            "total_buys": total_buys_count,
+            "total_sells": total_sells_count,
             "total_buy_eth": total_buy_eth,
             "total_sell_eth": total_sell_eth,
             "total_gas_eth": total_gas_eth,

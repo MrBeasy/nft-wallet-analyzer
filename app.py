@@ -63,34 +63,19 @@ def api_wallets():
             LEFT JOIN wallet_summaries ws ON w.address = ws.wallet_address
             ORDER BY ws.realized_pnl_eth DESC, w.name
         """).fetchall()
-        sell_rows = conn.execute("""
-            SELECT wallet_address, block_timestamp
-            FROM trades WHERE side = 'sell'
-            ORDER BY wallet_address, block_timestamp
-        """).fetchall()
 
-    sell_map = {}
-    for r in sell_rows:
-        sell_map.setdefault(r["wallet_address"], []).append(r["block_timestamp"])
-
-    result = []
-    for r in rows:
-        d = dict(r)
-        d["sell_timestamps"] = sell_map.get(d["address"], [])
-        if sell_from is not None or sell_until is not None:
-            with db.get_conn() as conn:
-                trades = db.get_trades(conn, d["address"])
-            if trades:
-                ar = analytics.compute_analytics(trades)
+        result = []
+        for r in rows:
+            d = dict(r)
+            if sell_from is not None or sell_until is not None:
+                ar = get_cached_analytics(conn, d["address"])
                 matched = [
                     m for m in ar.get("matched_trades", [])
                     if (sell_from  is None or m["sell_ts"] >= sell_from)
                     and (sell_until is None or m["sell_ts"] <= sell_until)
                 ]
                 d.update(_wallet_stats_from_matched(matched))
-            else:
-                d.update(_wallet_stats_from_matched([]))
-        result.append(d)
+            result.append(d)
     return jsonify(result)
 
 
@@ -102,20 +87,21 @@ def api_report(address):
     since = request.args.get("since", type=int)
     db.init_db()
     with db.get_conn() as conn:
+        # Raw trades are still needed for the player card and slug mapping
         trades = db.get_trades(conn, address, since=since)
         wallet_row = db.get_wallet(conn, address)
         sync_state = db.get_sync_state(conn, address)
         latest_trade_ts = db.get_latest_trade_ts(conn, address)
 
-    if not trades:
-        msg = "No trades in this time range." if since else "No trades found. Run a sync first."
-        return jsonify({"error": msg}), 404
+        if not trades:
+            msg = "No trades in this time range." if since else "No trades found. Run a sync first."
+            return jsonify({"error": msg}), 404
 
-    result = analytics.compute_analytics(trades)
-
-    # Only update the all-time summary cache when not filtered
-    if not since:
-        with db.get_conn() as conn:
+        if since:
+            result = analytics.compute_analytics(trades)
+        else:
+            result = get_cached_analytics(conn, address)
+            # Keep the all-time summary cache fresh even on cache hits
             db.upsert_wallet_summary(conn, address, result["summary"], latest_trade_ts)
 
     # Player card — uses unstripped per_collection (still has holding_times)
@@ -200,11 +186,14 @@ def api_pnl_buckets(address):
     since = request.args.get("since", type=int, default=0)
     db.init_db()
     with db.get_conn() as conn:
-        trades = db.get_trades(conn, address, since=since if since else None)
-    if not trades:
+        if since:
+            trades = db.get_trades(conn, address, since=since)
+            result = analytics.compute_analytics(trades) if trades else {}
+        else:
+            result = get_cached_analytics(conn, address)
+    if not result:
         return jsonify({"buckets": [], "bucket_type": "daily", "total_pnl_eth": 0})
 
-    result = analytics.compute_analytics(trades)
     matched = result.get("matched_trades", [])
 
     buckets_map = {}
@@ -438,6 +427,44 @@ META_WINDOWS = [1, 7, 30, 90, 0]
 # 5 minutes (window cutoffs drift with the clock).
 _meta_cache = {"key": None, "expires": 0.0, "payload": None}
 
+# Per-wallet analytics cache. FIFO analytics over full history is deterministic,
+# so cache each wallet's compute_analytics() result keyed by a cheap fingerprint
+# of that wallet's trade rows plus the collections table (get_trades JOINs
+# collections for name/total_fee_bps, and fee bps feeds PnL math).
+# TOTAL(gas_eth) catches --gas backfill UPDATEs; sell_type backfill UPDATEs are
+# NOT caught (cosmetic only — /api/sell_graph bypasses this cache and stays fresh).
+# Memory: ~23 wallets x full matched-trade/open-position dicts is tens of MB —
+# fine for a local single-user tool.
+_wallet_cache = {}  # wallet -> {"fp": (...), "result": analytics_dict}
+
+
+def get_cached_analytics(conn, wallet):
+    """Full-history analytics for one wallet, cached. Only call with a wallet's
+    complete unfiltered history — filtered paths must fetch+compute themselves."""
+    wallet = wallet.lower()
+    trades_fp = tuple(conn.execute(
+        "SELECT COUNT(*), COALESCE(MAX(id), 0), TOTAL(gas_eth) FROM trades WHERE wallet_address = ?",
+        (wallet,)).fetchone())
+    # upsert_collection_floor doesn't bump fetched_at, but floor data isn't in
+    # get_trades output; COUNT + MAX(fetched_at) + TOTAL(total_fee_bps) covers
+    # the columns that do flow into analytics (name changes ride on fetched_at).
+    cols_fp = tuple(conn.execute(
+        "SELECT COUNT(*), COALESCE(MAX(fetched_at), 0), TOTAL(total_fee_bps) FROM collections"
+    ).fetchone())
+    fp = trades_fp + cols_fp
+    hit = _wallet_cache.get(wallet)
+    if hit and hit["fp"] == fp:
+        return hit["result"]
+    # A sync subprocess may insert rows between the fingerprint query and this
+    # fetch; the cached result then holds more trades than fp claims, and the
+    # next request's fingerprint mismatch forces a recompute — self-healing.
+    trades = db.get_trades(conn, wallet)
+    result = analytics.compute_analytics(trades) if trades else {}
+    # Flask runs threaded: dict assignment is atomic; worst case two threads
+    # compute the same wallet concurrently once. No lock needed.
+    _wallet_cache[wallet] = {"fp": fp, "result": result}
+    return result
+
 
 @app.route("/api/meta")
 def api_meta():
@@ -473,69 +500,68 @@ def api_meta():
 
     merged = {d: defaultdict(_new_stats) for d in META_WINDOWS}
 
-    for wallet in all_wallets:
-        with db.get_conn() as conn:
-            trades = db.get_trades(conn, wallet)
-        if not trades:
-            continue
-        result = analytics.compute_analytics(trades)
-
-        for addr, s in result["per_collection"].items():
-            # Metadata shared by every window bucket
-            for d in META_WINDOWS:
-                m = merged[d][addr]
-                if s["name"]:
-                    m["name"] = s["name"]
-                m["total_fee_bps"] = s["total_fee_bps"]
-                m["open_positions"] += s["open_positions"]
-                m["wallets"].add(wallet)
-                ft = s.get("first_trade_ts")
-                if ft and (m["first_trade_ts"] is None or ft < m["first_trade_ts"]):
-                    m["first_trade_ts"] = ft
-
-            # All-time bucket takes the full per-collection stats
-            m = merged[0][addr]
-            m["buys"] += s["buys"]
-            m["sells"] += s["sells"]
-            m["buy_eth"] += s["buy_eth"]
-            m["sell_eth"] += s["sell_eth"]
-            m["fees_eth"] += s["fees_eth"]
-            m["realized_pnl"] += s["realized_pnl"]
-            m["matched_trades"] += s["matched_trades"]
-            m["holding_times"].extend(s.get("holding_times") or [])
-            m["wins"] += s.get("wins", 0)
-            m["losses"] += s.get("losses", 0)
-
-        # Windowed buys: buy events inside the window
-        for t in trades:
-            row = dict(t)
-            if row["side"] != "buy":
-                continue
-            ts = row["block_timestamp"] or 0
-            for d, cutoff in cutoffs.items():
-                if ts >= cutoff:
-                    merged[d][row["collection_address"]]["buys"] += 1
-
-        # Windowed round trips: dated by the sell, buy may predate the window
-        for mt in result["matched_trades"]:
-            for d, cutoff in cutoffs.items():
-                if mt["sell_ts"] < cutoff:
-                    continue
-                m = merged[d][mt["collection_address"]]
-                m["sells"] += 1
-                m["buy_eth"] += mt["buy_eth"]
-                m["sell_eth"] += mt["sell_eth"]
-                m["fees_eth"] += mt["sell_fees_eth"]
-                m["realized_pnl"] += mt["pnl_eth"]
-                m["matched_trades"] += 1
-                if mt["holding_secs"] >= 0:
-                    m["holding_times"].append(mt["holding_secs"])
-                if mt["pnl_eth"] > 0:
-                    m["wins"] += 1
-                else:
-                    m["losses"] += 1
-
     with db.get_conn() as conn:
+        for wallet in all_wallets:
+            result = get_cached_analytics(conn, wallet)
+            if not result:
+                continue
+
+            for addr, s in result["per_collection"].items():
+                # Metadata shared by every window bucket
+                for d in META_WINDOWS:
+                    m = merged[d][addr]
+                    if s["name"]:
+                        m["name"] = s["name"]
+                    m["total_fee_bps"] = s["total_fee_bps"]
+                    m["open_positions"] += s["open_positions"]
+                    m["wallets"].add(wallet)
+                    ft = s.get("first_trade_ts")
+                    if ft and (m["first_trade_ts"] is None or ft < m["first_trade_ts"]):
+                        m["first_trade_ts"] = ft
+
+                # All-time bucket takes the full per-collection stats
+                m = merged[0][addr]
+                m["buys"] += s["buys"]
+                m["sells"] += s["sells"]
+                m["buy_eth"] += s["buy_eth"]
+                m["sell_eth"] += s["sell_eth"]
+                m["fees_eth"] += s["fees_eth"]
+                m["realized_pnl"] += s["realized_pnl"]
+                m["matched_trades"] += s["matched_trades"]
+                m["holding_times"].extend(s.get("holding_times") or [])
+                m["wins"] += s.get("wins", 0)
+                m["losses"] += s.get("losses", 0)
+
+            # Windowed round trips: dated by the sell, buy may predate the window
+            for mt in result["matched_trades"]:
+                for d, cutoff in cutoffs.items():
+                    if mt["sell_ts"] < cutoff:
+                        continue
+                    m = merged[d][mt["collection_address"]]
+                    m["sells"] += 1
+                    m["buy_eth"] += mt["buy_eth"]
+                    m["sell_eth"] += mt["sell_eth"]
+                    m["fees_eth"] += mt["sell_fees_eth"]
+                    m["realized_pnl"] += mt["pnl_eth"]
+                    m["matched_trades"] += 1
+                    if mt["holding_secs"] >= 0:
+                        m["holding_times"].append(mt["holding_secs"])
+                    if mt["pnl_eth"] > 0:
+                        m["wins"] += 1
+                    else:
+                        m["losses"] += 1
+
+        # Windowed buys: buy events inside the window, merged across wallets
+        # (same as the old per-wallet Python loop, in one SQL pass per window)
+        for d, cutoff in cutoffs.items():
+            buy_rows = conn.execute(
+                "SELECT collection_address, COUNT(*) FROM trades"
+                " WHERE side = 'buy' AND block_timestamp >= ? GROUP BY collection_address",
+                (cutoff,)
+            ).fetchall()
+            for addr, n in buy_rows:
+                merged[d][addr]["buys"] += n
+
         ts_rows = conn.execute(
             "SELECT collection_address, MAX(block_timestamp), MIN(block_timestamp) FROM trades GROUP BY collection_address"
         ).fetchall()
@@ -611,16 +637,18 @@ def api_benchmark():
 
     db.init_db()
     with db.get_conn() as conn:
-        target_trades = db.get_trades(conn, wallet_addr, since=since)
+        if since or collection_filter:
+            target_trades = db.get_trades(conn, wallet_addr, since=since)
+            if collection_filter:
+                target_trades = [t for t in target_trades if t["collection_address"] == collection_filter]
+            target_stats = analytics.compute_analytics(target_trades) if target_trades else {}
+        else:
+            target_stats = get_cached_analytics(conn, wallet_addr)
 
-    if collection_filter:
-        target_trades = [t for t in target_trades if t["collection_address"] == collection_filter]
-
-    if not target_trades:
+    if not target_stats:
         msg = "No trades in this time range." if since else "No trades found for this wallet."
         return jsonify({"error": msg}), 404
 
-    target_stats = analytics.compute_analytics(target_trades)
     target_collections = set(target_stats["per_collection"].keys())
 
     if not target_collections:
@@ -676,52 +704,55 @@ def api_benchmark():
     basket_all_cost_basis_open = 0.0
     basket_open_data: list = []  # (cost, slug, fee_bps) per open position
 
-    for bw in basket_wallets:
-        with db.get_conn() as conn:
-            bw_trades = db.get_trades(conn, bw, since=since)
-        if collection_filter:
-            bw_trades = [t for t in bw_trades if t["collection_address"] == collection_filter]
-        if not bw_trades:
-            continue
-        bw_stats = analytics.compute_analytics(bw_trades)
-        bs = bw_stats["summary"]
-
-        # Full-basket summary accumulation (all their trades)
-        basket_all_buy_eth += bs.get("total_buy_eth", 0)
-        basket_all_pnl += bs.get("realized_pnl_eth", 0)
-        basket_all_trades += bs.get("total_trades", 0)
-        basket_all_open_count += bs.get("open_positions", 0)
-        basket_all_cost_basis_open += bs.get("open_cost_basis_eth", 0)
-        for _buys in (bw_stats.get("open_positions") or {}).values():
-            for _b in _buys:
-                basket_open_data.append((
-                    _b.get("eth_amount", 0) + (_b.get("gas_eth") or 0),
-                    _b.get("collection_slug"),
-                    _b.get("total_fee_bps") or 0,
-                ))
-
-        for col_addr, cs in bw_stats["per_collection"].items():
-            basket_all_wins += cs.get("wins", 0)
-            basket_all_losses += cs.get("losses", 0)
-            basket_all_ht.extend(cs.get("holding_times") or [])
-
-            # Per-collection table: only accumulate for target wallet's collections
-            if col_addr not in target_collections:
+    with db.get_conn() as conn:
+        for bw in basket_wallets:
+            if since or collection_filter:
+                bw_trades = db.get_trades(conn, bw, since=since)
+                if collection_filter:
+                    bw_trades = [t for t in bw_trades if t["collection_address"] == collection_filter]
+                bw_stats = analytics.compute_analytics(bw_trades) if bw_trades else {}
+            else:
+                bw_stats = get_cached_analytics(conn, bw)
+            if not bw_stats:
                 continue
-            b = basket_per_col[col_addr]
-            if cs["name"]:
-                b["name"] = cs["name"]
-            b["buys"] += cs["buys"]
-            b["sells"] += cs["sells"]
-            b["buy_eth"] += cs["buy_eth"]
-            b["sell_eth"] += cs["sell_eth"]
-            b["fees_eth"] += cs["fees_eth"]
-            b["realized_pnl"] += cs["realized_pnl"]
-            b["matched_trades"] += cs["matched_trades"]
-            b["wins"] += cs.get("wins", 0)
-            b["losses"] += cs.get("losses", 0)
-            b["holding_times"].extend(cs.get("holding_times") or [])
-            b["wallet_count"] += 1
+            bs = bw_stats["summary"]
+
+            # Full-basket summary accumulation (all their trades)
+            basket_all_buy_eth += bs.get("total_buy_eth", 0)
+            basket_all_pnl += bs.get("realized_pnl_eth", 0)
+            basket_all_trades += bs.get("total_trades", 0)
+            basket_all_open_count += bs.get("open_positions", 0)
+            basket_all_cost_basis_open += bs.get("open_cost_basis_eth", 0)
+            for _buys in (bw_stats.get("open_positions") or {}).values():
+                for _b in _buys:
+                    basket_open_data.append((
+                        _b.get("eth_amount", 0) + (_b.get("gas_eth") or 0),
+                        _b.get("collection_slug"),
+                        _b.get("total_fee_bps") or 0,
+                    ))
+
+            for col_addr, cs in bw_stats["per_collection"].items():
+                basket_all_wins += cs.get("wins", 0)
+                basket_all_losses += cs.get("losses", 0)
+                basket_all_ht.extend(cs.get("holding_times") or [])
+
+                # Per-collection table: only accumulate for target wallet's collections
+                if col_addr not in target_collections:
+                    continue
+                b = basket_per_col[col_addr]
+                if cs["name"]:
+                    b["name"] = cs["name"]
+                b["buys"] += cs["buys"]
+                b["sells"] += cs["sells"]
+                b["buy_eth"] += cs["buy_eth"]
+                b["sell_eth"] += cs["sell_eth"]
+                b["fees_eth"] += cs["fees_eth"]
+                b["realized_pnl"] += cs["realized_pnl"]
+                b["matched_trades"] += cs["matched_trades"]
+                b["wins"] += cs.get("wins", 0)
+                b["losses"] += cs.get("losses", 0)
+                b["holding_times"].extend(cs.get("holding_times") or [])
+                b["wallet_count"] += 1
 
     # Build per-collection comparison list
     collections_out = []
@@ -869,29 +900,28 @@ def api_collection_detail(address):
     col_name = (col_row["name"] or col_row["slug"] if col_row else None) or address[:10] + "..."
 
     rows = []
-    for wallet in wallets:
-        with db.get_conn() as conn:
-            trades = db.get_trades(conn, wallet)
+    with db.get_conn() as conn:
+        for wallet in wallets:
+            result = get_cached_analytics(conn, wallet)
+            if not result:
+                continue
+            s = result["per_collection"].get(address)
+            if not s:
+                continue
             wallet_row = db.get_wallet(conn, wallet)
-        if not trades:
-            continue
-        result = analytics.compute_analytics(trades)
-        s = result["per_collection"].get(address)
-        if not s:
-            continue
-        total_trades = s["buys"] + s["sells"]
-        roi = s["roi"] * 100 if s.get("roi") is not None else None
-        rows.append({
-            "wallet_address": wallet,
-            "wallet_name": wallet_row["name"] if wallet_row else None,
-            "trades": total_trades,
-            "buys": s["buys"],
-            "sells": s["sells"],
-            "realized_pnl": round(s["realized_pnl"], 4),
-            "roi_pct": round(roi, 2) if roi is not None else None,
-            "first_trade_ts": s.get("first_trade_ts"),
-            "last_trade_ts": s.get("last_trade_ts") or 0,
-        })
+            total_trades = s["buys"] + s["sells"]
+            roi = s["roi"] * 100 if s.get("roi") is not None else None
+            rows.append({
+                "wallet_address": wallet,
+                "wallet_name": wallet_row["name"] if wallet_row else None,
+                "trades": total_trades,
+                "buys": s["buys"],
+                "sells": s["sells"],
+                "realized_pnl": round(s["realized_pnl"], 4),
+                "roi_pct": round(roi, 2) if roi is not None else None,
+                "first_trade_ts": s.get("first_trade_ts"),
+                "last_trade_ts": s.get("last_trade_ts") or 0,
+            })
 
     rows.sort(key=lambda r: r["trades"], reverse=True)
     return jsonify({"collection_address": address, "collection_name": col_name, "wallets": rows})
@@ -909,16 +939,17 @@ def api_collection_pnl_buckets(address):
         ).fetchall()]
 
     buckets_map = {}
-    for wallet in wallets:
-        with db.get_conn() as conn:
-            trades = db.get_trades(conn, wallet, since=since if since else None)
-        if not trades:
-            continue
-        result = analytics.compute_analytics(trades)
-        for m in result.get("matched_trades", []):
-            if m["collection_address"] != address:
-                continue
-            _add_daily_bucket(buckets_map, m)
+    with db.get_conn() as conn:
+        for wallet in wallets:
+            if since:
+                trades = db.get_trades(conn, wallet, since=since)
+                result = analytics.compute_analytics(trades) if trades else {}
+            else:
+                result = get_cached_analytics(conn, wallet)
+            for m in result.get("matched_trades", []):
+                if m["collection_address"] != address:
+                    continue
+                _add_daily_bucket(buckets_map, m)
 
     buckets = sorted(buckets_map.values(), key=lambda b: b["key"])
     total_pnl = sum(b["pnl_eth"] for b in buckets)
