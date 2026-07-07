@@ -243,18 +243,6 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
 .mf-reset:hover{color:var(--text);border-color:var(--text)}
 .meta-count{font-size:12px;color:var(--muted);align-self:flex-end;padding:0 4px;white-space:nowrap}
 
-/* ── Meta spotlight cards ── */
-.spotlight-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:28px}
-@media(max-width:720px){.spotlight-grid{grid-template-columns:1fr}}
-.spotlight{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);
-  padding:20px;position:relative}
-.spotlight-icon{font-size:24px;margin-bottom:8px;line-height:1}
-.spotlight-category{font-size:10px;color:var(--muted);text-transform:uppercase;
-  letter-spacing:.6px;margin-bottom:6px;font-weight:600}
-.spotlight-name{font-size:15px;font-weight:700;margin-bottom:4px;
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.spotlight-val{font-size:26px;font-weight:800;font-family:var(--mono);letter-spacing:-.5px}
-.spotlight-sub{font-size:12px;color:var(--muted);margin-top:4px}
 .meta-page-hdr{margin-bottom:24px}
 .meta-page-hdr h1{font-size:22px;font-weight:700;letter-spacing:-.4px;margin-bottom:4px}
 .meta-page-hdr p{font-size:13px;color:var(--muted)}
@@ -294,6 +282,27 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
   padding-right:14px;border-right:1px solid var(--border)}
 .legend-item{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
 .legend-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+/* ── PnL chart date-range brush ── */
+.pnl-brush-row{display:flex;align-items:center;gap:10px;margin-top:10px;padding:0 4px}
+.pnl-date-inp{background:var(--surface);border:1px solid var(--border);border-radius:6px;
+  color:var(--text);font-size:11px;font-family:var(--mono);padding:4px 6px;width:122px;
+  color-scheme:dark}
+.pnl-date-inp:focus{outline:none;border-color:var(--blue)}
+.pnl-brush{position:relative;flex:1;height:40px;border:1px solid var(--border);
+  border-radius:6px;overflow:hidden;background:var(--surface);cursor:crosshair;
+  touch-action:none;user-select:none}
+.pnl-brush-bg{position:absolute;inset:0;width:100%;height:100%}
+.pnl-brush-shade{position:absolute;top:0;bottom:0;background:rgba(0,0,0,.45);pointer-events:none}
+.pnl-brush-shade[data-side="l"]{left:0}
+.pnl-brush-win{position:absolute;top:0;bottom:0;border:1px solid var(--blue);
+  border-radius:4px;cursor:grab;display:flex;justify-content:space-between;
+  background:rgba(59,130,246,.08);box-sizing:border-box}
+.pnl-brush-win:active{cursor:grabbing}
+.pnl-brush-hdl{width:9px;cursor:ew-resize;position:relative;flex-shrink:0}
+.pnl-brush-hdl::after{content:'';position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+  width:4px;height:16px;border-radius:2px;background:var(--blue)}
+.pnl-brush-grip{flex:1;min-width:0}
+
 .graph-page-hdr{margin-bottom:20px}
 .graph-page-hdr h1{font-size:22px;font-weight:700;letter-spacing:-.4px;margin-bottom:4px}
 .graph-page-hdr p{font-size:13px;color:var(--muted)}
@@ -465,11 +474,18 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
 <main id="view-meta" style="display:none">
   <div class="meta-page-hdr">
     <h1>Meta Analysis</h1>
-    <p>Collections with more than 10 trades across all tracked wallets</p>
+  </div>
+  <div class="d-filter-bar" style="margin-bottom:12px">
+    <div class="filter-btns">
+      <button class="fbtn active" data-metadays="1"  onclick="setMetaFilter(1)">24h</button>
+      <button class="fbtn"        data-metadays="7"  onclick="setMetaFilter(7)">7d</button>
+      <button class="fbtn"        data-metadays="30" onclick="setMetaFilter(30)">30d</button>
+      <button class="fbtn"        data-metadays="90" onclick="setMetaFilter(90)">90d</button>
+      <button class="fbtn"        data-metadays="0"  onclick="setMetaFilter(0)">All Time</button>
+    </div>
   </div>
   <div id="meta-loader" class="loader"><div class="spinner"></div></div>
   <div id="meta-content" style="display:none">
-    <div id="meta-spotlights" class="spotlight-grid"></div>
     <div class="meta-filters">
       <div class="mf-group" style="flex:1;min-width:180px">
         <label class="mf-lbl">Search</label>
@@ -481,7 +497,7 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
       </div>
       <div class="mf-group">
         <label class="mf-lbl">Min Trades</label>
-        <input id="mf-trades" class="mf-inp" type="number" step="1" min="11" placeholder="e.g. 50" oninput="applyMetaFilters()">
+        <input id="mf-trades" class="mf-inp" type="number" step="1" min="1" placeholder="e.g. 50" oninput="applyMetaFilters()">
       </div>
       <div class="mf-group">
         <label class="mf-lbl">Min Avg Hold (days)</label>
@@ -1484,10 +1500,86 @@ function renderPnlChart(data, { loaderId = 'pnl-loader', innerId = 'pnl-inner', 
   loader.style.display = 'none';
   inner.style.display = '';
 
-  const buckets = data.buckets || [];
-  if (!buckets.length) {
+  const raw = data.buckets || [];
+  if (!raw.length) {
     inner.innerHTML = '<p style="color:var(--muted);text-align:center;padding:2.5rem 0">No realized PnL in this time range.</p>';
     return;
+  }
+
+  // Continuous zero-filled daily series across the fetched range
+  const DAY = 86400;
+  const byTs = Object.create(null);
+  raw.forEach(b => { byTs[b.ts] = b; });
+  const days = [];
+  for (let t = raw[0].ts; t <= raw[raw.length - 1].ts; t += DAY) {
+    const b = byTs[t];
+    days.push({ ts: t, pnl: b ? b.pnl_eth : 0, count: b ? b.trade_count : 0 });
+  }
+  const nDays = days.length;
+  let selA = 0, selB = nDays - 1; // selected day range (inclusive)
+
+  const MO = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const fmtDay = (ts, yr) => {
+    const d = new Date(ts * 1000);
+    return MO[d.getUTCMonth()] + ' ' + d.getUTCDate() + (yr ? " '" + String(d.getUTCFullYear()).slice(2) : '');
+  };
+  const isoDay = ts => new Date(ts * 1000).toISOString().slice(0, 10);
+
+  inner.innerHTML = `
+    <div class="pnl-chart-main"></div>
+    <div class="pnl-brush-row">
+      <input type="date" class="pnl-date-inp" data-role="a">
+      <div class="pnl-brush">
+        <svg class="pnl-brush-bg" preserveAspectRatio="none"></svg>
+        <div class="pnl-brush-shade" data-side="l"></div>
+        <div class="pnl-brush-shade" data-side="r"></div>
+        <div class="pnl-brush-win">
+          <div class="pnl-brush-hdl" data-h="a"></div>
+          <div class="pnl-brush-grip"></div>
+          <div class="pnl-brush-hdl" data-h="b"></div>
+        </div>
+      </div>
+      <input type="date" class="pnl-date-inp" data-role="b">
+    </div>`;
+
+  const main = inner.querySelector('.pnl-chart-main');
+  const brush = inner.querySelector('.pnl-brush');
+  const brushBg = inner.querySelector('.pnl-brush-bg');
+  const shadeL = inner.querySelector('.pnl-brush-shade[data-side="l"]');
+  const shadeR = inner.querySelector('.pnl-brush-shade[data-side="r"]');
+  const win = inner.querySelector('.pnl-brush-win');
+  const inpA = inner.querySelector('.pnl-date-inp[data-role="a"]');
+  const inpB = inner.querySelector('.pnl-date-inp[data-role="b"]');
+  inpA.min = inpB.min = isoDay(days[0].ts);
+  inpA.max = inpB.max = isoDay(days[nDays - 1].ts);
+
+  // Brush background: |PnL| per day as a filled mini area (DefiLlama-style)
+  const BW = 900, BH = 40;
+  const maxAbsDay = Math.max(...days.map(d => Math.abs(d.pnl)), 0.0001);
+  let path = `M0,${BH}`;
+  days.forEach((d, i) => {
+    const x = nDays === 1 ? BW / 2 : (i / (nDays - 1)) * BW;
+    const y = BH - (Math.abs(d.pnl) / maxAbsDay) * (BH - 4);
+    path += `L${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  path += `L${BW},${BH}Z`;
+  brushBg.setAttribute('viewBox', `0 0 ${BW} ${BH}`);
+  brushBg.innerHTML = `<path d="${path}" fill="rgba(148,163,184,.3)"/>`;
+
+  const tooltip = document.getElementById(tooltipId);
+
+  // Aggregate selected days into ~100 bars (daily when the range is small)
+  function currentBuckets() {
+    const span = selB - selA + 1;
+    const g = span > 100 ? Math.ceil(span / 100) : 1;
+    const out = [];
+    for (let i = selA; i <= selB; i += g) {
+      const end = Math.min(i + g - 1, selB);
+      let pnl = 0, count = 0;
+      for (let j = i; j <= end; j++) { pnl += days[j].pnl; count += days[j].count; }
+      out.push({ ts0: days[i].ts, ts1: days[end].ts, pnl_eth: pnl, trade_count: count });
+    }
+    return out;
   }
 
   // Layout constants
@@ -1496,85 +1588,161 @@ function renderPnlChart(data, { loaderId = 'pnl-loader', innerId = 'pnl-inner', 
   const plotW = W - PL - PR, plotH = H - PT - PB;
   const y0 = PT + plotH / 2; // zero line
 
-  const N = buckets.length;
-  const barStep = plotW / N;
-  const barW = Math.min(36, barStep * 0.72);
+  let curBuckets = [], barStep = 0;
 
-  const maxAbs = Math.max(...buckets.map(b => Math.abs(b.pnl_eth)), 0.0001);
-  const yS = (plotH / 2) / maxAbs;
+  function drawMain() {
+    const buckets = currentBuckets();
+    curBuckets = buckets;
+    const N = buckets.length;
+    barStep = plotW / N;
+    const barW = Math.min(36, Math.max(1, barStep * 0.72));
 
-  // Y axis ticks (symmetric around 0)
-  const ticks = niceAxisTicks(-maxAbs, maxAbs, 7);
+    const maxAbs = Math.max(...buckets.map(b => Math.abs(b.pnl_eth)), 0.0001);
+    const yS = (plotH / 2) / maxAbs;
 
-  // Label every Nth bucket to avoid crowding (target ~12 labels max)
-  const labelEvery = Math.max(1, Math.ceil(N / 12));
+    // Y axis ticks (symmetric around 0)
+    const ticks = niceAxisTicks(-maxAbs, maxAbs, 7);
 
-  let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block;overflow:visible">`;
+    // Label every Nth bucket to avoid crowding (target ~12 labels max)
+    const labelEvery = Math.max(1, Math.ceil(N / 12));
+    const spanYears = new Date(days[selA].ts * 1000).getUTCFullYear() !== new Date(days[selB].ts * 1000).getUTCFullYear();
 
-  // Grid lines + Y labels
-  ticks.forEach(v => {
-    const y = y0 - v * yS;
-    const lbl = v === 0 ? '0' : (v > 0 ? '+' : '') + v.toFixed(3);
-    s += `<line x1="${PL}" x2="${PL + plotW}" y1="${y}" y2="${y}" stroke="${v === 0 ? '#666' : 'var(--border)'}" stroke-width="${v === 0 ? 1.5 : 0.7}"/>`;
-    s += `<text x="${PL - 6}" y="${y + 4}" text-anchor="end" font-size="11" fill="var(--muted)">${lbl}</text>`;
-  });
+    let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block;overflow:visible">`;
 
-  // Bars
-  buckets.forEach((b, i) => {
-    const cx = PL + (i + 0.5) * barStep;
-    const bx = cx - barW / 2;
-    const pnl = b.pnl_eth;
-    const color = pnl >= 0 ? '#4ade80' : '#f87171';
-    let by, bh;
-    if (pnl >= 0) {
-      bh = Math.max(pnl * yS, 1);
-      by = y0 - bh;
+    // Grid lines + Y labels
+    ticks.forEach(v => {
+      const y = y0 - v * yS;
+      const lbl = v === 0 ? '0' : (v > 0 ? '+' : '') + v.toFixed(3);
+      s += `<line x1="${PL}" x2="${PL + plotW}" y1="${y}" y2="${y}" stroke="${v === 0 ? '#666' : 'var(--border)'}" stroke-width="${v === 0 ? 1.5 : 0.7}"/>`;
+      s += `<text x="${PL - 6}" y="${y + 4}" text-anchor="end" font-size="11" fill="var(--muted)">${lbl}</text>`;
+    });
+
+    // Bars
+    buckets.forEach((b, i) => {
+      const cx = PL + (i + 0.5) * barStep;
+      const bx = cx - barW / 2;
+      const pnl = b.pnl_eth;
+      const color = pnl >= 0 ? '#4ade80' : '#f87171';
+      let by, bh;
+      if (pnl >= 0) {
+        bh = Math.max(pnl * yS, 1);
+        by = y0 - bh;
+      } else {
+        bh = Math.max(Math.abs(pnl) * yS, 1);
+        by = y0;
+      }
+      s += `<rect x="${bx.toFixed(1)}" y="${by.toFixed(1)}" width="${barW.toFixed(1)}" height="${bh.toFixed(1)}" fill="${color}" rx="2" data-i="${i}"/>`;
+    });
+
+    // X labels (rotated)
+    buckets.forEach((b, i) => {
+      if (i % labelEvery !== 0 && i !== N - 1) return;
+      const cx = PL + (i + 0.5) * barStep;
+      s += `<text x="${cx.toFixed(1)}" y="${PT + plotH + 16}" text-anchor="end" font-size="11" fill="var(--muted)" transform="rotate(-38,${cx.toFixed(1)},${PT + plotH + 16})">${fmtDay(b.ts0, spanYears)}</text>`;
+    });
+
+    // Invisible hit-targets for each bar (full column height for easy hover)
+    buckets.forEach((b, i) => {
+      const bx = PL + i * barStep;
+      s += `<rect x="${bx.toFixed(1)}" y="${PT}" width="${barStep.toFixed(1)}" height="${plotH}" fill="transparent" data-i="${i}" class="pnl-hit"/>`;
+    });
+
+    s += '</svg>';
+    main.innerHTML = s;
+
+    const svg = main.querySelector('svg');
+    svg.addEventListener('pointermove', e => {
+      const rect = svg.getBoundingClientRect();
+      const mx = (e.clientX - rect.left) * (W / rect.width);
+      const idx = Math.floor((mx - PL) / barStep);
+      if (idx < 0 || idx >= curBuckets.length) { tooltip.classList.add('hidden'); return; }
+      const b = curBuckets[idx];
+      const title = b.ts0 === b.ts1 ? fmtDay(b.ts0, true) : fmtDay(b.ts0, true) + ' – ' + fmtDay(b.ts1, true);
+      const pnlCls = b.pnl_eth >= 0 ? 'pos' : 'neg';
+      tooltip.innerHTML = `
+        <div style="font-weight:600;margin-bottom:4px">${title}</div>
+        <div class="${pnlCls}" style="font-family:var(--mono)">${fmtPnl(b.pnl_eth)}</div>
+        <div style="color:var(--muted);font-size:11px">${b.trade_count} trade${b.trade_count !== 1 ? 's' : ''}</div>`;
+      tooltip.classList.remove('hidden');
+      const paneRect = document.getElementById(paneId).getBoundingClientRect();
+      let tx = e.clientX - paneRect.left + 14;
+      let ty = e.clientY - paneRect.top - 10;
+      if (tx + 180 > paneRect.width) tx = e.clientX - paneRect.left - 180;
+      tooltip.style.left = tx + 'px';
+      tooltip.style.top = ty + 'px';
+    });
+    svg.addEventListener('pointerleave', () => tooltip.classList.add('hidden'));
+  }
+
+  // Brush window / shades / date inputs reflect the current selection
+  function syncUI() {
+    const l = (selA / nDays) * 100, r = ((selB + 1) / nDays) * 100;
+    win.style.left = l + '%';
+    win.style.width = (r - l) + '%';
+    shadeL.style.width = l + '%';
+    shadeR.style.left = r + '%';
+    shadeR.style.width = (100 - r) + '%';
+    inpA.value = isoDay(days[selA].ts);
+    inpB.value = isoDay(days[selB].ts);
+  }
+
+  let raf = 0;
+  function update() {
+    syncUI();
+    if (!raf) raf = requestAnimationFrame(() => { raf = 0; drawMain(); });
+  }
+
+  function idxAt(clientX) {
+    const r = brush.getBoundingClientRect();
+    const f = (clientX - r.left) / r.width;
+    return Math.max(0, Math.min(nDays - 1, Math.floor(f * nDays)));
+  }
+
+  let drag = null; // {mode:'a'|'b'|'pan', startIdx, a0, b0}
+  brush.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    const i = idxAt(e.clientX);
+    const hdl = e.target.closest('.pnl-brush-hdl');
+    if (hdl) {
+      drag = { mode: hdl.dataset.h };
+    } else if (e.target.closest('.pnl-brush-win')) {
+      drag = { mode: 'pan', startIdx: i, a0: selA, b0: selB };
     } else {
-      bh = Math.max(Math.abs(pnl) * yS, 1);
-      by = y0;
+      // click on track outside the window: move the nearest edge there
+      drag = { mode: Math.abs(i - selA) <= Math.abs(i - selB) ? 'a' : 'b' };
+      applyDrag(i);
     }
-    s += `<rect x="${bx.toFixed(1)}" y="${by.toFixed(1)}" width="${barW.toFixed(1)}" height="${bh.toFixed(1)}" fill="${color}" rx="2" data-i="${i}"/>`;
+    brush.setPointerCapture(e.pointerId);
   });
+  brush.addEventListener('pointermove', e => { if (drag) applyDrag(idxAt(e.clientX)); });
+  brush.addEventListener('pointerup', () => { drag = null; });
+  brush.addEventListener('pointercancel', () => { drag = null; });
 
-  // X labels (rotated)
-  buckets.forEach((b, i) => {
-    if (i % labelEvery !== 0 && i !== N - 1) return;
-    const cx = PL + (i + 0.5) * barStep;
-    s += `<text x="${cx.toFixed(1)}" y="${PT + plotH + 16}" text-anchor="end" font-size="11" fill="var(--muted)" transform="rotate(-38,${cx.toFixed(1)},${PT + plotH + 16})">${b.label}</text>`;
-  });
+  function applyDrag(i) {
+    if (drag.mode === 'a') selA = Math.min(i, selB);
+    else if (drag.mode === 'b') selB = Math.max(i, selA);
+    else {
+      const spanLen = drag.b0 - drag.a0;
+      const a = Math.max(0, Math.min(nDays - 1 - spanLen, drag.a0 + (i - drag.startIdx)));
+      selA = a; selB = a + spanLen;
+    }
+    update();
+  }
 
-  // Invisible hit-targets for each bar (full column height for easy hover)
-  buckets.forEach((b, i) => {
-    const bx = PL + i * barStep;
-    s += `<rect x="${bx.toFixed(1)}" y="${PT}" width="${barStep.toFixed(1)}" height="${plotH}" fill="transparent" data-i="${i}" class="pnl-hit"/>`;
-  });
+  function onDateInput(role) {
+    const inp = role === 'a' ? inpA : inpB;
+    const ts = Date.parse(inp.value + 'T00:00:00Z') / 1000;
+    if (!isFinite(ts)) { syncUI(); return; }
+    let i = Math.round((ts - days[0].ts) / DAY);
+    i = Math.max(0, Math.min(nDays - 1, i));
+    if (role === 'a') selA = Math.min(i, selB); else selB = Math.max(i, selA);
+    update();
+  }
+  inpA.addEventListener('change', () => onDateInput('a'));
+  inpB.addEventListener('change', () => onDateInput('b'));
 
-  s += '</svg>';
-  inner.innerHTML = s;
-
-  // Tooltip
-  const tooltip = document.getElementById(tooltipId);
-  const svg = inner.querySelector('svg');
-  svg.addEventListener('pointermove', e => {
-    const rect = svg.getBoundingClientRect();
-    const mx = (e.clientX - rect.left) * (W / rect.width);
-    const idx = Math.floor((mx - PL) / barStep);
-    if (idx < 0 || idx >= N) { tooltip.classList.add('hidden'); return; }
-    const b = buckets[idx];
-    const pnlCls = b.pnl_eth >= 0 ? 'pos' : 'neg';
-    tooltip.innerHTML = `
-      <div style="font-weight:600;margin-bottom:4px">${b.label}</div>
-      <div class="${pnlCls}" style="font-family:var(--mono)">${fmtPnl(b.pnl_eth)}</div>
-      <div style="color:var(--muted);font-size:11px">${b.trade_count} trade${b.trade_count !== 1 ? 's' : ''}</div>`;
-    tooltip.classList.remove('hidden');
-    const paneRect = document.getElementById(paneId).getBoundingClientRect();
-    let tx = e.clientX - paneRect.left + 14;
-    let ty = e.clientY - paneRect.top - 10;
-    if (tx + 180 > paneRect.width) tx = e.clientX - paneRect.left - 180;
-    tooltip.style.left = tx + 'px';
-    tooltip.style.top = ty + 'px';
-  });
-  svg.addEventListener('pointerleave', () => tooltip.classList.add('hidden'));
+  syncUI();
+  drawMain();
 }
 
 function renderTradesTable(containerId, tableId, trades) {
@@ -1720,7 +1888,15 @@ function renderColTradeRow(row) {
 // Meta Analysis view
 // ─────────────────────────────────────────────────────────────────────────────
 
-let metaCache = null;
+let metaCache = null;   // {"1": [...], "7": [...], "30": [...], "90": [...], "0": [...]} per window
+let metaDays = 1;
+
+function setMetaFilter(days) {
+  metaDays = days;
+  document.querySelectorAll('[data-metadays]').forEach(b =>
+    b.classList.toggle('active', parseInt(b.dataset.metadays) === days));
+  applyMetaFilters();
+}
 
 async function loadMeta() {
   document.getElementById('view-home').style.display = 'none';
@@ -1746,8 +1922,8 @@ async function loadMeta() {
       metaCache = await fetch('/api/meta').then(r => r.json());
     }
     loader.style.display = 'none';
-    if (!metaCache.length) { empty.classList.remove('hidden'); return; }
-    renderMeta(metaCache);
+    if (!(metaCache['0'] || []).length) { empty.classList.remove('hidden'); return; }
+    applyMetaFilters();
     content.style.display = '';
   } catch {
     loader.innerHTML = '<p style="color:var(--muted)">Failed to load meta data.</p>';
@@ -1756,6 +1932,7 @@ async function loadMeta() {
 
 function applyMetaFilters() {
   if (!metaCache) return;
+  const rows      = metaCache[String(metaDays)] || [];
   const search    = document.getElementById('mf-search').value.trim().toLowerCase();
   const minPnl    = parseFloat(document.getElementById('mf-pnl').value);
   const minTrades = parseInt(document.getElementById('mf-trades').value);
@@ -1764,7 +1941,7 @@ function applyMetaFilters() {
   const afterDate = document.getElementById('mf-date').value;
   const afterTs   = afterDate ? Date.parse(afterDate) / 1000 : NaN;
 
-  const filtered = metaCache.filter(r => {
+  const filtered = rows.filter(r => {
     if (search && !(r.name || '').toLowerCase().includes(search)) return false;
     if (!isNaN(minPnl)    && r.realized_pnl < minPnl) return false;
     if (!isNaN(minTrades) && r.total_trades < minTrades) return false;
@@ -1776,64 +1953,14 @@ function applyMetaFilters() {
 
   renderMetaTable(filtered);
   document.getElementById('meta-count').textContent =
-    filtered.length === metaCache.length
-      ? `${metaCache.length} collections`
-      : `${filtered.length} of ${metaCache.length} collections`;
+    filtered.length === rows.length
+      ? `${rows.length} collections`
+      : `${filtered.length} of ${rows.length} collections`;
 }
 
 function resetMetaFilters() {
   ['mf-search','mf-pnl','mf-trades','mf-hold','mf-wr','mf-date'].forEach(id => document.getElementById(id).value = '');
   applyMetaFilters();
-}
-
-function renderMeta(rows) {
-  // ── Spotlight: best by each dimension ────────────────────────────────────
-  const withMatched = rows.filter(r => r.matched_trades > 0);
-
-  const bestRoi     = withMatched.length ? withMatched.reduce((a, b) => a.roi_pct > b.roi_pct ? a : b) : null;
-  const withRecent  = rows.filter(r => (r.trades_7d || 0) > 0);
-  const hottestCol  = withRecent.length ? withRecent.reduce((a, b) => (a.trades_7d || 0) > (b.trades_7d || 0) ? a : b) : null;
-  const mostTraded  = rows.reduce((a, b) => a.total_trades > b.total_trades ? a : b);
-
-  const spotlights = [
-    {
-      icon: '🏆',
-      category: 'Highest ROI',
-      row: bestRoi,
-      val: bestRoi ? fmtRoi(bestRoi.roi_pct) : '—',
-      valCls: bestRoi ? (bestRoi.roi_pct >= 0 ? 'pos' : 'neg') : '',
-      sub: bestRoi ? `${bestRoi.matched_trades} round trip${bestRoi.matched_trades !== 1 ? 's' : ''}` : '',
-    },
-    {
-      icon: '🔥',
-      category: 'Hottest Collection',
-      row: hottestCol,
-      val: hottestCol ? `${hottestCol.trades_7d} trades` : '—',
-      valCls: '',
-      sub: hottestCol ? 'last 7 days' : '',
-    },
-    {
-      icon: '📊',
-      category: 'Most Traded',
-      row: mostTraded,
-      val: mostTraded ? mostTraded.total_trades.toLocaleString() : '—',
-      valCls: '',
-      sub: mostTraded ? `${mostTraded.buys} buys · ${mostTraded.sells} sells` : '',
-    },
-  ];
-
-  document.getElementById('meta-spotlights').innerHTML = spotlights.map(sp => `
-    <div class="spotlight">
-      <div class="spotlight-icon">${sp.icon}</div>
-      <div class="spotlight-category">${sp.category}</div>
-      <div class="spotlight-name">${esc(sp.row ? sp.row.name : '—')}</div>
-      <div class="spotlight-val ${sp.valCls}">${sp.val}</div>
-      <div class="spotlight-sub">${sp.sub}</div>
-    </div>`).join('');
-
-  // Render table with all rows initially, then apply any existing filter state
-  renderMetaTable(rows);
-  document.getElementById('meta-count').textContent = `${rows.length} collections`;
 }
 
 function renderMetaTable(rows) {
@@ -1856,7 +1983,7 @@ function renderMetaTable(rows) {
 
   const wrap = document.getElementById('meta-table-wrap');
   if (!rows.length) {
-    wrap.innerHTML = '<div class="no-data" style="padding:40px;text-align:center;color:var(--muted)">No collections match these filters.</div>';
+    wrap.innerHTML = '<div class="no-data" style="padding:40px;text-align:center;color:var(--muted)">No sales in this time window match the filters.</div>';
     return;
   }
 

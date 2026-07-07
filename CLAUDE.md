@@ -38,7 +38,7 @@ Flask + SQLite tool that syncs a wallet's NFT trade history from OpenSea and com
 | GET | `/api/trades/<address>` | Raw trades, optional `?collection=` filter |
 | POST | `/api/sync` | Trigger sync (SSE stream of log lines) |
 | GET | `/api/floor/<address>` | Fetch live floor prices for open positions |
-| GET | `/api/meta` | Cross-wallet collection stats, filtered to >10 trades |
+| GET | `/api/meta` | Cross-wallet collection stats, all time windows (24h/7d/30d/90d/all) keyed by days; round trips dated by sell |
 | PATCH | `/api/wallet/<address>` | Update wallet name/notes |
 
 ## Running

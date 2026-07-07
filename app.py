@@ -202,35 +202,28 @@ def api_pnl_buckets(address):
     with db.get_conn() as conn:
         trades = db.get_trades(conn, address, since=since if since else None)
     if not trades:
-        return jsonify({"buckets": [], "bucket_type": "monthly", "total_pnl_eth": 0})
+        return jsonify({"buckets": [], "bucket_type": "daily", "total_pnl_eth": 0})
 
     result = analytics.compute_analytics(trades)
     matched = result.get("matched_trades", [])
 
-    now = int(_time.time())
-    range_days = (now - since) / 86400 if since else 99999
-    if range_days > 180:
-        bucket_type = "monthly"
-    else:
-        bucket_type = "daily"
-
     buckets_map = {}
     for m in matched:
-        dt = datetime.fromtimestamp(m["sell_ts"], tz=_tz.utc)
-        if bucket_type == "monthly":
-            key = dt.strftime("%Y-%m")
-            label = dt.strftime("%b '") + dt.strftime("%y")
-        else:
-            key = dt.strftime("%Y-%m-%d")
-            label = dt.strftime("%b ") + str(dt.day)
-        if key not in buckets_map:
-            buckets_map[key] = {"key": key, "label": label, "pnl_eth": 0.0, "trade_count": 0}
-        buckets_map[key]["pnl_eth"] += m["pnl_eth"]
-        buckets_map[key]["trade_count"] += 1
+        _add_daily_bucket(buckets_map, m)
 
     buckets = sorted(buckets_map.values(), key=lambda b: b["key"])
     total_pnl = sum(b["pnl_eth"] for b in buckets)
-    return jsonify({"buckets": buckets, "bucket_type": bucket_type, "total_pnl_eth": total_pnl})
+    return jsonify({"buckets": buckets, "bucket_type": "daily", "total_pnl_eth": total_pnl})
+
+
+def _add_daily_bucket(buckets_map, m):
+    dt = datetime.fromtimestamp(m["sell_ts"], tz=_tz.utc)
+    key = dt.strftime("%Y-%m-%d")
+    if key not in buckets_map:
+        day_ts = int(datetime(dt.year, dt.month, dt.day, tzinfo=_tz.utc).timestamp())
+        buckets_map[key] = {"key": key, "ts": day_ts, "pnl_eth": 0.0, "trade_count": 0}
+    buckets_map[key]["pnl_eth"] += m["pnl_eth"]
+    buckets_map[key]["trade_count"] += 1
 
 
 # ── API: sync (streaming) ──────────────────────────────────────────────────────
@@ -432,26 +425,53 @@ def api_floor(address):
         })
 
 
-# ── API: meta analysis (cross-wallet, collections with >10 trades) ─────────────
+# ── API: meta analysis (cross-wallet collection stats, per time window) ────────
+
+# Windows in days; 0 = all time. Windowed buckets count a round trip when its
+# SELL falls inside the window (the buy may be older), so FIFO matching always
+# runs over full history. All windows are computed in one pass and returned
+# together so the frontend can switch windows without refetching.
+META_WINDOWS = [1, 7, 30, 90, 0]
+
+# Recomputing FIFO analytics for every wallet takes seconds, so cache the
+# payload. Invalidated when the trades table changes (fingerprint) or after
+# 5 minutes (window cutoffs drift with the clock).
+_meta_cache = {"key": None, "expires": 0.0, "payload": None}
+
 
 @app.route("/api/meta")
 def api_meta():
     from collections import defaultdict
     db.init_db()
     with db.get_conn() as conn:
+        fp = conn.execute(
+            "SELECT COUNT(*), COALESCE(MAX(rowid), 0) FROM trades"
+        ).fetchone()
         all_wallets = [r[0] for r in conn.execute(
             "SELECT DISTINCT wallet_address FROM trades"
         ).fetchall()]
 
-    merged = defaultdict(lambda: {
-        "name": "", "buys": 0, "sells": 0,
-        "buy_eth": 0.0, "sell_eth": 0.0, "fees_eth": 0.0,
-        "realized_pnl": 0.0, "matched_trades": 0,
-        "holding_times": [], "open_positions": 0, "total_fee_bps": 0,
-        "wins": 0, "losses": 0,
-        "first_trade_ts": None,
-        "wallets": set(),
-    })
+    cache_key = (fp[0], fp[1])
+    if (_meta_cache["payload"] is not None
+            and _meta_cache["key"] == cache_key
+            and _time.time() < _meta_cache["expires"]):
+        return jsonify(_meta_cache["payload"])
+
+    now = int(_time.time())
+    cutoffs = {d: now - d * 86400 for d in META_WINDOWS if d}
+
+    def _new_stats():
+        return {
+            "name": "", "buys": 0, "sells": 0,
+            "buy_eth": 0.0, "sell_eth": 0.0, "fees_eth": 0.0,
+            "realized_pnl": 0.0, "matched_trades": 0,
+            "holding_times": [], "open_positions": 0, "total_fee_bps": 0,
+            "wins": 0, "losses": 0,
+            "first_trade_ts": None,
+            "wallets": set(),
+        }
+
+    merged = {d: defaultdict(_new_stats) for d in META_WINDOWS}
 
     for wallet in all_wallets:
         with db.get_conn() as conn:
@@ -459,10 +479,22 @@ def api_meta():
         if not trades:
             continue
         result = analytics.compute_analytics(trades)
+
         for addr, s in result["per_collection"].items():
-            m = merged[addr]
-            if s["name"]:
-                m["name"] = s["name"]
+            # Metadata shared by every window bucket
+            for d in META_WINDOWS:
+                m = merged[d][addr]
+                if s["name"]:
+                    m["name"] = s["name"]
+                m["total_fee_bps"] = s["total_fee_bps"]
+                m["open_positions"] += s["open_positions"]
+                m["wallets"].add(wallet)
+                ft = s.get("first_trade_ts")
+                if ft and (m["first_trade_ts"] is None or ft < m["first_trade_ts"]):
+                    m["first_trade_ts"] = ft
+
+            # All-time bucket takes the full per-collection stats
+            m = merged[0][addr]
             m["buys"] += s["buys"]
             m["sells"] += s["sells"]
             m["buy_eth"] += s["buy_eth"]
@@ -471,14 +503,37 @@ def api_meta():
             m["realized_pnl"] += s["realized_pnl"]
             m["matched_trades"] += s["matched_trades"]
             m["holding_times"].extend(s.get("holding_times") or [])
-            m["open_positions"] += s["open_positions"]
-            m["total_fee_bps"] = s["total_fee_bps"]
             m["wins"] += s.get("wins", 0)
             m["losses"] += s.get("losses", 0)
-            m["wallets"].add(wallet)
-            ft = s.get("first_trade_ts")
-            if ft and (m["first_trade_ts"] is None or ft < m["first_trade_ts"]):
-                m["first_trade_ts"] = ft
+
+        # Windowed buys: buy events inside the window
+        for t in trades:
+            row = dict(t)
+            if row["side"] != "buy":
+                continue
+            ts = row["block_timestamp"] or 0
+            for d, cutoff in cutoffs.items():
+                if ts >= cutoff:
+                    merged[d][row["collection_address"]]["buys"] += 1
+
+        # Windowed round trips: dated by the sell, buy may predate the window
+        for mt in result["matched_trades"]:
+            for d, cutoff in cutoffs.items():
+                if mt["sell_ts"] < cutoff:
+                    continue
+                m = merged[d][mt["collection_address"]]
+                m["sells"] += 1
+                m["buy_eth"] += mt["buy_eth"]
+                m["sell_eth"] += mt["sell_eth"]
+                m["fees_eth"] += mt["sell_fees_eth"]
+                m["realized_pnl"] += mt["pnl_eth"]
+                m["matched_trades"] += 1
+                if mt["holding_secs"] >= 0:
+                    m["holding_times"].append(mt["holding_secs"])
+                if mt["pnl_eth"] > 0:
+                    m["wins"] += 1
+                else:
+                    m["losses"] += 1
 
     with db.get_conn() as conn:
         ts_rows = conn.execute(
@@ -486,49 +541,56 @@ def api_meta():
         ).fetchall()
         last_ts_map = {r[0]: r[1] for r in ts_rows}
         first_ts_map = {r[0]: r[2] for r in ts_rows}
-        cutoff_7d = int(_time.time()) - 7 * 86400
+        cutoff_7d = now - 7 * 86400
         recent_rows = conn.execute(
             "SELECT collection_address, COUNT(*) FROM trades WHERE block_timestamp >= ? GROUP BY collection_address",
             (cutoff_7d,)
         ).fetchall()
         trades_7d_map = {r[0]: r[1] for r in recent_rows}
 
-    rows = []
-    for addr, s in merged.items():
-        total_trades = s["buys"] + s["sells"]
-        if total_trades <= 10:
-            continue
-        ht = s["holding_times"]
-        avg_holding_secs = sum(ht) / len(ht) if ht else None
-        roi_pct = (s["realized_pnl"] / s["buy_eth"] * 100) if s["buy_eth"] else 0
-        total_matched = s["wins"] + s["losses"]
-        win_rate = s["wins"] / total_matched if total_matched else 0
-        rows.append({
-            "address": addr,
-            "name": s["name"] or addr[:10] + "...",
-            "total_trades": total_trades,
-            "matched_trades": s["matched_trades"],
-            "buys": s["buys"],
-            "sells": s["sells"],
-            "buy_eth": round(s["buy_eth"], 4),
-            "sell_eth": round(s["sell_eth"], 4),
-            "fees_eth": round(s["fees_eth"], 4),
-            "realized_pnl": round(s["realized_pnl"], 4),
-            "roi_pct": round(roi_pct, 2),
-            "avg_holding_secs": round(avg_holding_secs, 1) if avg_holding_secs is not None else None,
-            "wins": s["wins"],
-            "losses": s["losses"],
-            "win_rate": round(win_rate * 100, 1),
-            "open_positions": s["open_positions"],
-            "total_fee_bps": s["total_fee_bps"],
-            "last_trade_ts": last_ts_map.get(addr),
-            "first_trade_ts": s.get("first_trade_ts") or first_ts_map.get(addr),
-            "trades_7d": trades_7d_map.get(addr, 0),
-            "wallets": list(s["wallets"]),
-        })
+    payload = {}
+    for d in META_WINDOWS:
+        rows = []
+        for addr, s in merged[d].items():
+            total_trades = s["buys"] + s["sells"]
+            # Windowed views only list collections with a sale inside the window
+            if d and s["sells"] == 0:
+                continue
+            if not total_trades:
+                continue
+            ht = s["holding_times"]
+            avg_holding_secs = sum(ht) / len(ht) if ht else None
+            roi_pct = (s["realized_pnl"] / s["buy_eth"] * 100) if s["buy_eth"] else 0
+            total_matched = s["wins"] + s["losses"]
+            win_rate = s["wins"] / total_matched if total_matched else 0
+            rows.append({
+                "address": addr,
+                "name": s["name"] or addr[:10] + "...",
+                "total_trades": total_trades,
+                "matched_trades": s["matched_trades"],
+                "buys": s["buys"],
+                "sells": s["sells"],
+                "buy_eth": round(s["buy_eth"], 4),
+                "sell_eth": round(s["sell_eth"], 4),
+                "fees_eth": round(s["fees_eth"], 4),
+                "realized_pnl": round(s["realized_pnl"], 4),
+                "roi_pct": round(roi_pct, 2),
+                "avg_holding_secs": round(avg_holding_secs, 1) if avg_holding_secs is not None else None,
+                "wins": s["wins"],
+                "losses": s["losses"],
+                "win_rate": round(win_rate * 100, 1),
+                "open_positions": s["open_positions"],
+                "total_fee_bps": s["total_fee_bps"],
+                "last_trade_ts": last_ts_map.get(addr),
+                "first_trade_ts": s.get("first_trade_ts") or first_ts_map.get(addr),
+                "trades_7d": trades_7d_map.get(addr, 0),
+                "wallets": list(s["wallets"]),
+            })
+        rows.sort(key=lambda r: r["roi_pct"], reverse=True)
+        payload[str(d)] = rows
 
-    rows.sort(key=lambda r: r["roi_pct"], reverse=True)
-    return jsonify(rows)
+    _meta_cache.update(key=cache_key, expires=_time.time() + 300, payload=payload)
+    return jsonify(payload)
 
 
 # ── API: benchmark (wallet vs basket comparison) ──────────────────────────────
@@ -846,10 +908,6 @@ def api_collection_pnl_buckets(address):
             (address,)
         ).fetchall()]
 
-    now = int(_time.time())
-    range_days = (now - since) / 86400 if since else 99999
-    bucket_type = "monthly" if range_days > 180 else "daily"
-
     buckets_map = {}
     for wallet in wallets:
         with db.get_conn() as conn:
@@ -860,21 +918,11 @@ def api_collection_pnl_buckets(address):
         for m in result.get("matched_trades", []):
             if m["collection_address"] != address:
                 continue
-            dt = datetime.fromtimestamp(m["sell_ts"], tz=_tz.utc)
-            if bucket_type == "monthly":
-                key = dt.strftime("%Y-%m")
-                label = dt.strftime("%b '") + dt.strftime("%y")
-            else:
-                key = dt.strftime("%Y-%m-%d")
-                label = dt.strftime("%b ") + str(dt.day)
-            if key not in buckets_map:
-                buckets_map[key] = {"key": key, "label": label, "pnl_eth": 0.0, "trade_count": 0}
-            buckets_map[key]["pnl_eth"] += m["pnl_eth"]
-            buckets_map[key]["trade_count"] += 1
+            _add_daily_bucket(buckets_map, m)
 
     buckets = sorted(buckets_map.values(), key=lambda b: b["key"])
     total_pnl = sum(b["pnl_eth"] for b in buckets)
-    return jsonify({"buckets": buckets, "bucket_type": bucket_type, "total_pnl_eth": total_pnl})
+    return jsonify({"buckets": buckets, "bucket_type": "daily", "total_pnl_eth": total_pnl})
 
 
 # ── API: collections list (for graph picker) ───────────────────────────────────
