@@ -353,7 +353,7 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
         <input id="wf-name" class="mf-inp" type="text" placeholder="Search…" oninput="applyWalletFilters()">
       </div>
       <div class="mf-group" style="min-width:170px">
-        <label class="mf-lbl">PnL ETH</label>
+        <label class="mf-lbl">rPnL</label>
         <div class="mf-range">
           <input id="wf-pnl-from"  class="mf-inp" type="number" step="0.01" placeholder="from"  oninput="applyWalletFilters()">
           <input id="wf-pnl-until" class="mf-inp" type="number" step="0.01" placeholder="until" oninput="applyWalletFilters()">
@@ -491,7 +491,7 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
         <input id="mf-search" class="mf-inp" type="text" placeholder="Collection name…" oninput="applyMetaFilters()" style="width:100%">
       </div>
       <div class="mf-group">
-        <label class="mf-lbl">Min PnL (ETH)</label>
+        <label class="mf-lbl">Min rPnL</label>
         <input id="mf-pnl" class="mf-inp" type="number" step="0.01" placeholder="e.g. 0.1" oninput="applyMetaFilters()">
       </div>
       <div class="mf-group">
@@ -892,7 +892,7 @@ function renderWalletTable(wallets) {
       <table id="tbl-wallet-compare">
         <thead><tr>
           ${makeHeaders('wallet-compare',
-            ['Wallet','PnL ETH','ROI','Win Rate','Trades','Collections','Open','Avg Hold','Spent ETH','Last Synced'],
+            ['Wallet','rPnL','ROI','Win Rate','Trades','Collections','Open','Avg Hold','Spent ETH','Last Synced'],
             sortCol, sortDir)}
         </tr></thead>
         <tbody></tbody>
@@ -2166,7 +2166,7 @@ function renderMetaTable(rows) {
       <table id="tbl-meta">
         <thead><tr>
           ${makeHeaders('meta',
-            ['Collection','Trades','Buys','Sells','ROI %','PnL ETH','Avg Hold','Win Rate','Open','Last Trade','First Traded'],
+            ['Collection','Trades','Buys','Sells','ROI %','rPnL','Avg Hold','Win Rate','Open','Last Trade','First Traded'],
             sortCol, sortDir)}
         </tr></thead>
         <tbody></tbody>
@@ -2273,7 +2273,7 @@ async function loadCollection(addr) {
       <div class="tbl-wrap">
         <table id="tbl-col-detail">
           <thead><tr>
-            ${makeHeaders('col-detail', ['Wallet','Trades','Buys','Sells','PnL ETH','ROI','First Traded','Last Traded'], 0, -1)}
+            ${makeHeaders('col-detail', ['Wallet','Trades','Buys','Sells','rPnL','ROI','First Traded','Last Traded'], 0, -1)}
           </tr></thead>
           <tbody></tbody>
         </table>
@@ -2489,7 +2489,7 @@ function makeHeaders(tableId, labels, defaultCol, defaultDir) {
   return labels.map((lbl, i) => {
     const alignCls = (i === labels.length - 1 && lbl === 'Tx') ? '' :
       ['Buys','Sells','Fee %','Avg Hold','Open','Win Rate','Trades','Collections','Last Synced','#','Total Trades','Your Trades','Others Trades','Your Hold','Others Hold'].includes(lbl) ? 'tc' :
-      ['Spent ETH','Rcvd ETH','Fees ETH','PnL ETH','rPnL','uPnL (Floor)','ROI','ETH','Gas ETH','Cost ETH','Volume (USD)','Your ROI','Others ROI','Your PnL','Others PnL'].includes(lbl) ? 'tr' : '';
+      ['Spent ETH','Rcvd ETH','Fees ETH','rPnL','uPnL (Floor)','ROI','ETH','Gas ETH','Cost ETH','Volume (USD)','Your ROI','Others ROI','Your PnL','Others PnL'].includes(lbl) ? 'tr' : '';
     return `<th class="${alignCls}" onclick="onThClick('${tableId}',${i})">${lbl}</th>`;
   }).join('');
 }

@@ -434,7 +434,7 @@ def format_collections(analytics: dict, top_n: int = 20) -> str:
             s["open_positions"],
         ])
     rows.sort(key=lambda r: float(r[7]), reverse=True)
-    headers = ["Collection", "Buys", "Sells", "Spent ETH", "Rcvd ETH", "Fees ETH", "Fee%", "PnL ETH", "ROI", "Avg Hold", "Open"]
+    headers = ["Collection", "Buys", "Sells", "Spent ETH", "Rcvd ETH", "Fees ETH", "Fee%", "rPnL", "ROI", "Avg Hold", "Open"]
     return tabulate(rows[:top_n], headers=headers, tablefmt="simple")
 
 
