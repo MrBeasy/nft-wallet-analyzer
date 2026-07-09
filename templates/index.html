@@ -448,20 +448,20 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
 
     <div class="tabs-wrap">
       <div class="tabs">
-        <button class="tab active" data-tab="collections" onclick="switchTab('collections',this)">Collections</button>
+        <button class="tab active" data-tab="pnl" onclick="switchTab('pnl',this)">PnL Chart</button>
+        <button class="tab" data-tab="collections" onclick="switchTab('collections',this)">Collections</button>
         <button class="tab" data-tab="open" onclick="switchTab('open',this)">Open Positions</button>
         <button class="tab" data-tab="trades" onclick="switchTab('trades',this)">All Trades</button>
-        <button class="tab" data-tab="pnl" onclick="switchTab('pnl',this)">PnL Chart</button>
       </div>
     </div>
 
-    <div id="pane-collections" class="tab-pane active"></div>
+    <div id="pane-collections" class="tab-pane"></div>
     <div id="pane-open" class="tab-pane"></div>
     <div id="pane-trades" class="tab-pane">
       <div id="trades-loader" class="loader"><div class="spinner"></div></div>
       <div id="trades-inner" style="display:none"></div>
     </div>
-    <div id="pane-pnl" class="tab-pane" style="position:relative">
+    <div id="pane-pnl" class="tab-pane active" style="position:relative">
       <div id="pnl-loader" class="loader"><div class="spinner"></div></div>
       <div id="pnl-inner" style="display:none"></div>
       <div id="pnl-tooltip" class="graph-tooltip hidden"></div>
@@ -1042,11 +1042,11 @@ async function loadDetail(address) {
   document.querySelectorAll('.fbtn').forEach(b =>
     b.classList.toggle('active', parseInt(b.dataset.days) === detailDays));
 
-  // Reset tab to collections
+  // Reset tab to PnL chart
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  document.querySelector('[data-tab="collections"]').classList.add('active');
+  document.querySelector('[data-tab="pnl"]').classList.add('active');
   document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
-  document.getElementById('pane-collections').classList.add('active');
+  document.getElementById('pane-pnl').classList.add('active');
   document.getElementById('trades-loader').style.display = '';
   document.getElementById('trades-inner').style.display = 'none';
   document.getElementById('pnl-loader').style.display = '';
@@ -1158,6 +1158,7 @@ function renderDetail(data) {
   if (data.summary.open_positions > 0) {
     fetchFloorData(data.wallet.address);
   }
+  loadPnlPane();
 }
 
 // ── Player card settings (localStorage-backed) ────────────────────────────────

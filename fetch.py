@@ -106,8 +106,8 @@ def fetch_best_offer(slug: str) -> float | None:
     if not offers:
         return None
     try:
-        raw = offers[0]["price"]["current"]["value"]
-        return int(float(raw)) / 1e18
+        raw = offers[0]["price"]["value"]
+        return int(raw) / 1e18
     except (KeyError, TypeError, ValueError):
         return None
 
