@@ -1618,9 +1618,9 @@ function renderPnlChart(data, { loaderId = 'pnl-loader', innerId = 'pnl-inner', 
     // Trailing bucket covering the current (unfinished) period: linear run-rate
     // projection, skipped when <5% of the period has elapsed (too noisy)
     const last = out[out.length - 1];
-    const now = Date.now() / 1000, spanEnd = last.ts1 + DAY;
-    if (now > last.ts0 && now < spanEnd) {
-      const frac = (now - last.ts0) / (spanEnd - last.ts0);
+    const refTs = data.synced_at || (Date.now() / 1000), spanEnd = last.ts1 + DAY;
+    if (refTs > last.ts0 && refTs < spanEnd) {
+      const frac = (refTs - last.ts0) / (spanEnd - last.ts0);
       if (frac >= 0.05) { last.proj_eth = last.pnl_eth / frac; last.proj_frac = frac; }
     }
     return out;

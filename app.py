@@ -206,7 +206,11 @@ def api_pnl_buckets(address):
 
     buckets = sorted(buckets_map.values(), key=lambda b: b["key"])
     total_pnl = sum(b["pnl_eth"] for b in buckets)
-    return jsonify({"buckets": buckets, "bucket_type": "daily", "total_pnl_eth": total_pnl})
+    with db.get_conn() as conn:
+        ss = db.get_sync_state(conn, address)
+    synced_at = ss["last_synced_at"] if ss else None
+    return jsonify({"buckets": buckets, "bucket_type": "daily", "total_pnl_eth": total_pnl,
+                    "synced_at": synced_at})
 
 
 def _add_daily_bucket(buckets_map, m):
@@ -957,7 +961,11 @@ def api_collection_pnl_buckets(address):
 
     buckets = sorted(buckets_map.values(), key=lambda b: b["key"])
     total_pnl = sum(b["pnl_eth"] for b in buckets)
-    return jsonify({"buckets": buckets, "bucket_type": "daily", "total_pnl_eth": total_pnl})
+    with db.get_conn() as conn:
+        sync_times = [db.get_sync_state(conn, w) for w in wallets]
+    synced_at = min((s["last_synced_at"] for s in sync_times if s and s["last_synced_at"]), default=None)
+    return jsonify({"buckets": buckets, "bucket_type": "daily", "total_pnl_eth": total_pnl,
+                    "synced_at": synced_at})
 
 
 # ── API: collections list (for graph picker) ───────────────────────────────────
