@@ -334,6 +334,7 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
       <button class="nav-btn" id="nav-graph" onclick="navigate('/graph')">Graph</button>
       <button class="nav-btn" id="nav-traders" onclick="navigate('/traders')">OS Traders</button>
       <button class="nav-btn" id="nav-benchmark" onclick="navigate('/benchmark')">Benchmark</button>
+      <button class="nav-btn" id="nav-market" onclick="navigate('/market')">Market</button>
     </nav>
   </div>
   <div>
@@ -660,6 +661,63 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
   </div>
 </main>
 
+<main id="view-market" style="display:none">
+  <div class="meta-page-hdr" style="margin-bottom:16px">
+    <div style="display:flex;align-items:baseline;gap:16px;flex-wrap:wrap">
+      <h1 style="margin:0">Market</h1>
+      <span style="color:var(--muted);font-size:13px">What happened in NFTs?</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;margin-top:8px;flex-wrap:wrap">
+      <div class="filter-btns">
+        <button class="fbtn active" id="mkt-btn-1"  onclick="setMarketWindow(1)">24h</button>
+        <button class="fbtn"        id="mkt-btn-7"  onclick="setMarketWindow(7)">7d</button>
+        <button class="fbtn"        id="mkt-btn-30" onclick="setMarketWindow(30)">30d</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:4px">
+        <input id="mkt-custom-days" type="number" min="1" placeholder="x days"
+          style="width:76px;padding:4px 7px;background:var(--surface);border:1px solid var(--border);
+                 border-radius:var(--r);color:var(--text);font-size:12px"
+          onkeydown="if(event.key==='Enter'){const v=parseInt(this.value);if(v>0)setMarketWindow(v)}"
+          onchange="const v=parseInt(this.value);if(v>0)setMarketWindow(v)">
+        <span style="color:var(--muted);font-size:12px">days</span>
+      </div>
+      <button class="btn btn-primary" id="mkt-sync-btn" onclick="runMarketSync({force:true})" style="margin-left:8px">Sync</button>
+      <span id="mkt-sync-status" style="font-size:12px;color:var(--muted)"></span>
+    </div>
+  </div>
+
+  <details id="mkt-log-details" style="margin-bottom:12px">
+    <summary style="font-size:12px;color:var(--muted);cursor:pointer;user-select:none">Sync log</summary>
+    <pre id="mkt-sync-log" style="background:var(--surface);border:1px solid var(--border);
+      border-radius:var(--r);padding:10px;font-size:11px;max-height:160px;overflow-y:auto;
+      margin:6px 0 0;color:var(--text)"></pre>
+  </details>
+
+  <div id="mkt-overview" style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap"></div>
+
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+    <input id="mkt-add-input" type="text" placeholder="OpenSea slug, e.g. milady"
+      style="padding:6px 10px;background:var(--surface);border:1px solid var(--border);
+             border-radius:var(--r);color:var(--text);font-size:12px;width:240px"
+      onkeydown="if(event.key==='Enter')addToWatchlist()">
+    <button class="btn" style="font-size:12px;padding:6px 12px" onclick="addToWatchlist()">+ Add</button>
+    <span id="mkt-add-err" style="font-size:12px;color:var(--red);display:none"></span>
+  </div>
+
+  <div id="mkt-table-wrap"></div>
+
+  <!-- Market detail modal -->
+  <div id="m-mkt" class="moverlay" style="display:none" onclick="if(event.target===this)closeModal('m-mkt')">
+    <div class="modal" onclick="event.stopPropagation()" style="max-width:860px;width:95%;max-height:85vh;overflow-y:auto">
+      <div class="modal-hdr">
+        <h3 id="mkt-modal-title">Trades</h3>
+        <button class="modal-close" onclick="closeModal('m-mkt')">✕</button>
+      </div>
+      <div id="mkt-modal-body"><div class="loader"><div class="spinner"></div></div></div>
+    </div>
+  </div>
+</main>
+
 <!-- ── Add/Sync modal ── -->
 <div id="m-add" class="moverlay" style="display:none" onclick="overlayClickAdd(event)">
   <div class="modal modal-sm" onclick="event.stopPropagation()">
@@ -789,6 +847,8 @@ function router() {
     loadDune();
   } else if (h === '#/benchmark') {
     loadBenchmark();
+  } else if (h === '#/market') {
+    loadMarket();
   } else {
     loadHome();
   }
@@ -800,6 +860,7 @@ function setNavActive(view) {
   document.getElementById('nav-graph').classList.toggle('active', view === 'graph');
   document.getElementById('nav-traders').classList.toggle('active', view === 'traders');
   document.getElementById('nav-benchmark').classList.toggle('active', view === 'benchmark');
+  document.getElementById('nav-market').classList.toggle('active', view === 'market');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -820,6 +881,7 @@ async function loadHome() {
   document.getElementById('view-dune').style.display = 'none';
   document.getElementById('view-collection').style.display = 'none';
   document.getElementById('view-benchmark').style.display = 'none';
+  document.getElementById('view-market').style.display = 'none';
   setNavActive('wallets');
   currentWallet = null;
   tradesLoaded = false;
@@ -1036,6 +1098,7 @@ async function loadDetail(address) {
   document.getElementById('view-dune').style.display = 'none';
   document.getElementById('view-collection').style.display = 'none';
   document.getElementById('view-benchmark').style.display = 'none';
+  document.getElementById('view-market').style.display = 'none';
   setNavActive('wallets');
 
   // Sync filter button state
@@ -2077,6 +2140,7 @@ async function loadMeta() {
   document.getElementById('view-dune').style.display = 'none';
   document.getElementById('view-collection').style.display = 'none';
   document.getElementById('view-benchmark').style.display = 'none';
+  document.getElementById('view-market').style.display = 'none';
   setNavActive('meta');
 
   const loader  = document.getElementById('meta-loader');
@@ -2209,7 +2273,7 @@ function fmtRoi(pct) {
 
 let currentCollection = null;
 
-async function loadCollection(addr) {
+async function loadCollection(addr) {  // eslint-disable-line no-unused-vars
   addr = addr.toLowerCase();
   currentCollection = addr;
   colPnlLoaded = false;
@@ -2221,6 +2285,7 @@ async function loadCollection(addr) {
   document.getElementById('view-dune').style.display = 'none';
   document.getElementById('view-collection').style.display = '';
   document.getElementById('view-benchmark').style.display = 'none';
+  document.getElementById('view-market').style.display = 'none';
   setNavActive('meta');
 
   // Reset tabs to Wallets
@@ -2668,6 +2733,7 @@ async function loadGraph() {
   document.getElementById('view-dune').style.display   = 'none';
   document.getElementById('view-collection').style.display = 'none';
   document.getElementById('view-benchmark').style.display = 'none';
+  document.getElementById('view-market').style.display = 'none';
   setNavActive('graph');
 
   if (!graphAllCols) {
@@ -3028,6 +3094,7 @@ async function loadDune() {
   document.getElementById('view-dune').style.display   = '';
   document.getElementById('view-collection').style.display = 'none';
   document.getElementById('view-benchmark').style.display = 'none';
+  document.getElementById('view-market').style.display = 'none';
   setNavActive('traders');
 
   if (!walletCache) {
@@ -3155,6 +3222,7 @@ async function loadBenchmark() {
   document.getElementById('view-dune').style.display = 'none';
   document.getElementById('view-collection').style.display = 'none';
   document.getElementById('view-benchmark').style.display = '';
+  document.getElementById('view-market').style.display = 'none';
   setNavActive('benchmark');
 
   // Restore timeframe button state
@@ -3506,6 +3574,210 @@ function openDuneWallet(address) {
   document.getElementById('m-add').style.display          = '';
 
   runSync(address, '', false);
+}
+
+// ── Market view ───────────────────────────────────────────────────────────────
+
+let marketDays = 1;
+let marketRows = [];
+let marketSyncRunning = false;
+
+async function loadMarket() {
+  ['view-home','view-detail','view-meta','view-graph','view-dune',
+   'view-collection','view-benchmark'].forEach(id =>
+    document.getElementById(id).style.display = 'none');
+  document.getElementById('view-market').style.display = '';
+  setNavActive('market');
+  await fetchMarketData();
+  runMarketSync({ force: false });
+}
+
+async function fetchMarketData() {
+  try {
+    const data = await fetch(`/api/market?days=${marketDays}`).then(r => r.json());
+    marketRows = data.rows || [];
+    renderMarketOverview(marketRows);
+    renderMarketTable(marketRows);
+  } catch (e) {
+    document.getElementById('mkt-table-wrap').innerHTML =
+      `<p style="color:var(--muted);text-align:center">Failed to load market data.</p>`;
+  }
+}
+
+function setMarketWindow(days) {
+  marketDays = days;
+  document.querySelectorAll('[id^="mkt-btn-"]').forEach(b => b.classList.remove('active'));
+  const known = { 1: 'mkt-btn-1', 7: 'mkt-btn-7', 30: 'mkt-btn-30' };
+  if (known[days]) document.getElementById(known[days]).classList.add('active');
+  fetchMarketData();
+}
+
+function renderMarketOverview(rows) {
+  const wrap = document.getElementById('mkt-overview');
+  const vol = rows.reduce((s, r) => s + (r.volume_eth || 0), 0);
+  const withChange = rows.filter(r => r.fp_change_pct != null);
+  const topGainer = withChange.length ? withChange.reduce((a, b) => (a.fp_change_pct > b.fp_change_pct ? a : b)) : null;
+  const topLoser  = withChange.length ? withChange.reduce((a, b) => (a.fp_change_pct < b.fp_change_pct ? a : b)) : null;
+  const card = (label, val, cls='') =>
+    `<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:10px 16px;min-width:160px">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:4px">${label}</div>
+      <div style="font-size:16px;font-weight:700;font-family:var(--mono)" class="${cls}">${val}</div>
+    </div>`;
+  const windowLabel = marketDays === 1 ? '24h' : `${marketDays}d`;
+  wrap.innerHTML =
+    card(`Volume (${windowLabel})`, vol.toFixed(3) + ' Ξ') +
+    (topGainer ? card(`Top Gainer (${windowLabel})`, `${esc(topGainer.name.slice(0,20))} +${topGainer.fp_change_pct.toFixed(1)}%`, 'pos') : '') +
+    (topLoser  ? card(`Top Loser (${windowLabel})`,  `${esc(topLoser.name.slice(0,20))} ${topLoser.fp_change_pct.toFixed(1)}%`,  'neg') : '');
+}
+
+function renderMarketTable(rows) {
+  const wrap = document.getElementById('mkt-table-wrap');
+  if (!rows.length) { wrap.innerHTML = '<div class="no-data">No collections in watchlist.</div>'; return; }
+  const tableRows = rows.map(r => [
+    r.name || r.slug,
+    r.floor_eth,
+    r.fp_change_pct,
+    r.best_offer_eth,
+    r.trades,
+    r.volume_eth,
+    r,
+  ]);
+  const prev = tbls['market'];
+  const sortCol = prev ? prev.sortCol : 1;
+  const sortDir = prev ? prev.sortDir : -1;
+  wrap.innerHTML = `<div class="tbl-wrap">
+    <table id="tbl-market">
+      <thead><tr>
+        ${makeHeaders('market', ['Name','Floor Ξ','FP Δ%','Top Bid Ξ','Trades','Volume Ξ',''], sortCol, sortDir)}
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>`;
+  initTable('market', tableRows, renderMarketRow, sortCol, sortDir);
+}
+
+function renderMarketRow(row) {
+  const r = row[6];
+  const fp = r.floor_eth != null ? r.floor_eth.toFixed(4) : '—';
+  const bid = r.best_offer_eth != null ? r.best_offer_eth.toFixed(4) : '—';
+  const vol = r.volume_eth != null ? r.volume_eth.toFixed(4) : '—';
+  const fpCls = r.fp_change_pct != null ? (r.fp_change_pct >= 0 ? 'pos' : 'neg') : '';
+  const fpChg = r.fp_change_pct != null ? `<span class="${fpCls}">${r.fp_change_pct >= 0 ? '+' : ''}${r.fp_change_pct.toFixed(1)}%</span>` : '—';
+  const dataLag = (r.oldest_event_ts && marketDays > 0 && r.oldest_event_ts > Date.now()/1000 - marketDays*86400)
+    ? `<span title="Data only from ${fmtDate(r.oldest_event_ts)}" style="color:var(--muted);font-size:10px;margin-left:4px">partial</span>` : '';
+  return `<tr onclick="openMarketDetail('${esc(r.slug)}','${esc(r.name || r.slug)}')" style="cursor:pointer">
+    <td><span title="${esc(r.slug)}">${esc((r.name || r.slug).slice(0,30))}</span></td>
+    <td class="mono tr">${fp}</td>
+    <td class="tc">${fpChg}</td>
+    <td class="mono tr">${bid}</td>
+    <td class="tc">${r.trades ?? 0}${dataLag}</td>
+    <td class="mono tr">${vol}</td>
+    <td style="padding:4px 6px">
+      <button class="btn" style="font-size:11px;padding:2px 8px;color:var(--red)"
+        onclick="event.stopPropagation();removeFromWatchlist('${esc(r.slug)}')">×</button>
+    </td>
+  </tr>`;
+}
+
+async function openMarketDetail(slug, name) {
+  document.getElementById('mkt-modal-title').textContent = `${name} — trades`;
+  document.getElementById('mkt-modal-body').innerHTML = '<div class="loader"><div class="spinner"></div></div>';
+  document.getElementById('m-mkt').style.display = '';
+  try {
+    const data = await fetch(`/api/market/trades/${encodeURIComponent(slug)}?days=${marketDays}`).then(r => r.json());
+    const trades = data.trades || [];
+    if (!trades.length) {
+      document.getElementById('mkt-modal-body').innerHTML = '<p style="color:var(--muted);text-align:center;padding:24px">No trades in this window.</p>';
+      return;
+    }
+    const rows = trades.map(t => [t.block_timestamp, t.eth_amount, t.seller_address, t.buyer_address, t.tx_hash, t.nft_id, t]);
+    const tId = 'mkt-detail-' + slug;
+    document.getElementById('mkt-modal-body').innerHTML = `<div class="tbl-wrap"><table id="tbl-${tId}">
+      <thead><tr>${makeHeaders(tId, ['Time','Ξ','Seller','Buyer','Tx','NFT ID'], 0, -1)}</tr></thead>
+      <tbody></tbody></table></div>`;
+    const shorten = a => a ? `<a href="https://etherscan.io/address/${esc(a)}" target="_blank" class="tx-lnk" onclick="event.stopPropagation()">${a.slice(0,6)}…${a.slice(-4)}</a>` : '—';
+    initTable(tId, rows, r => `<tr>
+      <td>${fmtDate(r[0])}</td>
+      <td class="mono tr">${r[1].toFixed(4)}</td>
+      <td class="mono">${shorten(r[2])}</td>
+      <td class="mono">${shorten(r[3])}</td>
+      <td>${r[4] ? `<a href="https://etherscan.io/tx/${esc(r[4])}" target="_blank" class="tx-lnk" onclick="event.stopPropagation()">${r[4].slice(0,8)}…</a>` : '—'}</td>
+      <td class="mono">${esc(r[5] || '')}</td>
+    </tr>`, 0, -1);
+  } catch {
+    document.getElementById('mkt-modal-body').innerHTML = '<p style="color:var(--muted);text-align:center;padding:24px">Failed to load trades.</p>';
+  }
+}
+
+async function addToWatchlist() {
+  const inp = document.getElementById('mkt-add-input');
+  const errEl = document.getElementById('mkt-add-err');
+  const slug = inp.value.trim().toLowerCase();
+  errEl.style.display = 'none';
+  if (!slug) return;
+  try {
+    const res = await fetch('/api/watchlist', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({slug}) });
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({}));
+      errEl.textContent = e.error || 'Failed to add collection.';
+      errEl.style.display = '';
+      return;
+    }
+    inp.value = '';
+    await fetchMarketData();
+  } catch {
+    errEl.textContent = 'Request failed.';
+    errEl.style.display = '';
+  }
+}
+
+async function removeFromWatchlist(slug) {
+  await fetch(`/api/watchlist/${encodeURIComponent(slug)}`, { method: 'DELETE' });
+  await fetchMarketData();
+}
+
+async function runMarketSync({ force }) {
+  if (marketSyncRunning && !force) return;
+  marketSyncRunning = true;
+  const statusEl = document.getElementById('mkt-sync-status');
+  const logEl = document.getElementById('mkt-sync-log');
+  const syncBtn = document.getElementById('mkt-sync-btn');
+  if (force) {
+    logEl.textContent = '';
+    document.getElementById('mkt-log-details').open = true;
+  }
+  statusEl.textContent = 'Syncing…';
+  if (syncBtn) syncBtn.disabled = true;
+  try {
+    const res = await fetch('/api/market/sync', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ force }),
+    });
+    const reader = res.body.getReader(), dec = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const parts = buf.split('\n\n');
+      buf = parts.pop();
+      for (const chunk of parts) {
+        const line = chunk.replace(/^data:\s*/, '');
+        if (!line) continue;
+        try {
+          const msg = JSON.parse(line);
+          if (msg.type === 'log') { logEl.textContent += msg.message + '\n'; logEl.scrollTop = logEl.scrollHeight; }
+          if (msg.type === 'done') { statusEl.textContent = 'Synced'; await fetchMarketData(); }
+        } catch {}
+      }
+    }
+  } catch {
+    statusEl.textContent = 'Sync failed';
+  } finally {
+    marketSyncRunning = false;
+    if (syncBtn) syncBtn.disabled = false;
+  }
 }
 </script>
 </body>

@@ -78,6 +78,42 @@ CREATE TABLE IF NOT EXISTS wallet_summaries (
     open_cost_basis_eth REAL,
     collections_traded  INTEGER
 );
+
+CREATE TABLE IF NOT EXISTS watchlist (
+    slug             TEXT PRIMARY KEY,
+    name             TEXT,
+    contract_address TEXT,
+    added_at         INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS market_trades (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    slug            TEXT NOT NULL,
+    tx_hash         TEXT NOT NULL,
+    block_timestamp INTEGER NOT NULL,
+    eth_amount      REAL NOT NULL,
+    buyer_address   TEXT,
+    seller_address  TEXT,
+    nft_id          TEXT,
+    UNIQUE(slug, tx_hash, nft_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_market_trades_slug_ts ON market_trades(slug, block_timestamp);
+
+CREATE TABLE IF NOT EXISTS floor_history (
+    slug           TEXT NOT NULL,
+    ts             INTEGER NOT NULL,
+    floor_eth      REAL,
+    best_offer_eth REAL
+);
+
+CREATE INDEX IF NOT EXISTS idx_floor_history_slug_ts ON floor_history(slug, ts);
+
+CREATE TABLE IF NOT EXISTS market_sync_state (
+    slug           TEXT PRIMARY KEY,
+    last_event_ts  INTEGER DEFAULT 0,
+    last_synced_at INTEGER
+);
 """
 
 
@@ -88,10 +124,36 @@ def get_conn() -> sqlite3.Connection:
     return conn
 
 
+_MARKET_SEED = [
+    ("cryptopunks",                 "CryptoPunks"),
+    ("chimpers",                    "Chimpers"),
+    ("good-vibes-club",             "Good Vibes Club"),
+    ("boredapeyachtclub",           "Bored Ape Yacht Club"),
+    ("pudgypenguins",               "Pudgy Penguins"),
+    ("quirkiesoriginals",           "Quirkies Originals"),
+    ("max-pain-and-frens",          "MAX PAIN AND FRENS"),
+    ("vv-checks-originals",         "Checks - VV Originals"),
+    ("moonbirds",                   "Moonbirds"),
+    ("otherdeed-expanded",          "Otherdeed Expanded"),
+    ("meebits",                     "Meebits"),
+    ("cryptoadz-by-gremplin",       "CrypToadz by GREMPLIN"),
+    ("nakamigos",                   "Nakamigos"),
+    ("goblintownwtf",               "goblintown.wtf"),
+    ("cryptodickbutts-s3",          "CryptoDickbutts"),
+    ("chromie-squiggle-by-snowfro", "Chromie Squiggle by Snowfro"),
+    ("glhfers",                     "GLHFers"),
+    ("genuine-undead",              "Genuine Undead"),
+]
+
+
 def init_db():
+    import time as _time
     conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
     try:
+        watchlist_existed = bool(conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='watchlist'"
+        ).fetchone())
         for stmt in (s.strip() for s in SCHEMA.split(";") if s.strip()):
             conn.execute(stmt)
         conn.commit()
@@ -105,6 +167,13 @@ def init_db():
                 conn.execute(col_def)
             except sqlite3.OperationalError:
                 pass
+        if not watchlist_existed:
+            now = int(_time.time())
+            for slug, name in _MARKET_SEED:
+                conn.execute(
+                    "INSERT OR IGNORE INTO watchlist (slug, name, contract_address, added_at) VALUES (?,?,?,?)",
+                    (slug, name, "", now),
+                )
         conn.commit()
     finally:
         conn.close()
@@ -304,3 +373,81 @@ def upsert_wallet_summary(conn, wallet_address: str, summary: dict, latest_trade
         s["realized_pnl_eth"], s["win_rate"], s["avg_holding"],
         s["open_positions"], s["open_cost_basis_eth"], s["collections_traded"],
     ))
+
+
+# ---------- market watchlist ----------
+
+def list_watchlist(conn) -> list:
+    return conn.execute("SELECT * FROM watchlist ORDER BY name").fetchall()
+
+
+def add_watchlist(conn, slug: str, name: str, contract_address: str = ""):
+    import time as _time
+    conn.execute(
+        "INSERT INTO watchlist (slug, name, contract_address, added_at) VALUES (?,?,?,?) "
+        "ON CONFLICT(slug) DO UPDATE SET name=excluded.name, contract_address=excluded.contract_address",
+        (slug, name, contract_address or "", int(_time.time())),
+    )
+
+
+def remove_watchlist(conn, slug: str):
+    conn.execute("DELETE FROM watchlist WHERE slug = ?", (slug,))
+
+
+# ---------- market trades ----------
+
+def insert_market_trade(conn, row: dict) -> bool:
+    try:
+        conn.execute(
+            "INSERT INTO market_trades (slug, tx_hash, block_timestamp, eth_amount, "
+            "buyer_address, seller_address, nft_id) VALUES (?,?,?,?,?,?,?)",
+            (row["slug"], row["tx_hash"], row["block_timestamp"], row["eth_amount"],
+             row.get("buyer_address", ""), row.get("seller_address", ""), row.get("nft_id", "")),
+        )
+        return True
+    except sqlite3.IntegrityError:
+        return False
+
+
+# ---------- floor history ----------
+
+def insert_floor_snapshot(conn, slug: str, floor_eth, offer_eth, ts: int):
+    conn.execute(
+        "INSERT INTO floor_history (slug, ts, floor_eth, best_offer_eth) VALUES (?,?,?,?)",
+        (slug, ts, floor_eth, offer_eth),
+    )
+
+
+def get_latest_floor_snapshot(conn, slug: str):
+    return conn.execute(
+        "SELECT * FROM floor_history WHERE slug=? ORDER BY ts DESC LIMIT 1", (slug,)
+    ).fetchone()
+
+
+def get_floor_at(conn, slug: str, cutoff_ts: int):
+    row = conn.execute(
+        "SELECT * FROM floor_history WHERE slug=? AND ts<=? ORDER BY ts DESC LIMIT 1",
+        (slug, cutoff_ts),
+    ).fetchone()
+    if row:
+        return row
+    return conn.execute(
+        "SELECT * FROM floor_history WHERE slug=? ORDER BY ts ASC LIMIT 1", (slug,)
+    ).fetchone()
+
+
+# ---------- market sync state ----------
+
+def get_market_sync_state(conn, slug: str):
+    return conn.execute(
+        "SELECT * FROM market_sync_state WHERE slug=?", (slug,)
+    ).fetchone()
+
+
+def set_market_sync_state(conn, slug: str, last_event_ts: int, last_synced_at: int):
+    conn.execute(
+        "INSERT INTO market_sync_state (slug, last_event_ts, last_synced_at) VALUES (?,?,?) "
+        "ON CONFLICT(slug) DO UPDATE SET last_event_ts=excluded.last_event_ts, "
+        "last_synced_at=excluded.last_synced_at",
+        (slug, last_event_ts, last_synced_at),
+    )

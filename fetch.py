@@ -254,6 +254,64 @@ def fetch_all_sale_events(wallet_address: str, from_cursor: Optional[str] = None
     return all_events, cursor
 
 
+def fetch_collection_sale_events(slug: str, after: int = None,
+                                  cursor: str = None) -> tuple[list, str | None]:
+    """One page of collection-wide sale events (not wallet-scoped)."""
+    url = f"{OPENSEA_BASE}/events/collection/{slug}"
+    params = {"event_type": "sale", "limit": 50}
+    if after:
+        params["after"] = after
+    if cursor:
+        params["next"] = cursor
+    data = _get(url, params, _opensea_headers())
+    raw = data.get("asset_events", [])
+    next_cursor = data.get("next")
+    events = []
+    for ev in raw:
+        payment = ev.get("payment") or {}
+        token_addr = (payment.get("token_address") or "").lower()
+        symbol = (payment.get("symbol") or "").upper()
+        if token_addr not in ETH_TOKENS and symbol not in ("ETH", "WETH"):
+            continue
+        try:
+            eth_amount = int(payment.get("quantity", "0")) / 1e18
+        except (ValueError, TypeError):
+            eth_amount = 0.0
+        if eth_amount <= 0:
+            continue
+        nft = ev.get("nft") or {}
+        seller_raw = ev.get("seller") or ""
+        buyer_raw = ev.get("buyer") or ""
+        seller = (seller_raw.get("address", "") if isinstance(seller_raw, dict) else str(seller_raw)).lower()
+        buyer = (buyer_raw.get("address", "") if isinstance(buyer_raw, dict) else str(buyer_raw)).lower()
+        events.append({
+            "slug": slug,
+            "tx_hash": (ev.get("transaction") or "").lower(),
+            "block_timestamp": ev.get("closing_date") or 0,
+            "eth_amount": eth_amount,
+            "buyer_address": buyer,
+            "seller_address": seller,
+            "nft_id": str(nft.get("identifier", "")),
+        })
+    return events, next_cursor
+
+
+def fetch_all_collection_sales(slug: str, after: int, progress_cb=None) -> list:
+    """Paginate all collection sale events since `after` (unix ts). Hard cap 200 pages."""
+    all_events = []
+    cursor = None
+    for page in range(1, 201):
+        events, next_cursor = fetch_collection_sale_events(slug, after=after, cursor=cursor)
+        if progress_cb:
+            progress_cb(page, len(events))
+        all_events.extend(events)
+        if not next_cursor or not events:
+            break
+        cursor = next_cursor
+        time.sleep(0.3)
+    return all_events
+
+
 # ── Etherscan ─────────────────────────────────────────────────────────────────
 
 def fetch_tx_gas(tx_hash: str) -> float:

@@ -19,6 +19,9 @@ import fetch
 
 app = Flask(__name__)
 
+MARKET_BACKFILL_DAYS = 30
+MARKET_SYNC_MIN_INTERVAL = 600  # skip re-sync if fresh within 10 min
+
 
 # ── Pages ─────────────────────────────────────────────────────────────────────
 
@@ -1136,6 +1139,149 @@ def api_dune_top_traders():
     rows = data.get("result", {}).get("rows", [])
     meta = data.get("result", {}).get("metadata", {})
     return jsonify({"rows": rows, "total": meta.get("total_row_count", len(rows))})
+
+
+# ── API: Market watchlist ──────────────────────────────────────────────────────
+
+@app.route("/api/market")
+def api_market():
+    days = request.args.get("days", 1, type=float)
+    db.init_db()
+    with db.get_conn() as conn:
+        watchlist = db.list_watchlist(conn)
+        now = int(_time.time())
+        cutoff = int(now - days * 86400) if days > 0 else 0
+        trade_rows = conn.execute(
+            "SELECT slug, COUNT(*) AS trades, SUM(eth_amount) AS volume, MIN(block_timestamp) AS oldest_ts "
+            "FROM market_trades WHERE (:c=0 OR block_timestamp>=:c) GROUP BY slug",
+            {"c": cutoff},
+        ).fetchall()
+        trade_map = {r["slug"]: dict(r) for r in trade_rows}
+    rows = []
+    for w in watchlist:
+        slug = w["slug"]
+        snap = None
+        old_snap = None
+        with db.get_conn() as conn:
+            snap = db.get_latest_floor_snapshot(conn, slug)
+            if cutoff:
+                old_snap = db.get_floor_at(conn, slug, cutoff)
+            ss = db.get_market_sync_state(conn, slug)
+        tm = trade_map.get(slug, {})
+        floor_eth = snap["floor_eth"] if snap else None
+        offer_eth = snap["best_offer_eth"] if snap else None
+        old_floor = old_snap["floor_eth"] if old_snap else None
+        fp_change = (floor_eth - old_floor) / old_floor * 100 if (floor_eth is not None and old_floor and old_floor != 0) else None
+        rows.append({
+            "slug": slug,
+            "name": w["name"],
+            "contract_address": w["contract_address"],
+            "floor_eth": floor_eth,
+            "best_offer_eth": offer_eth,
+            "trades": tm.get("trades", 0),
+            "volume_eth": round(tm.get("volume") or 0, 4),
+            "fp_change_pct": round(fp_change, 2) if fp_change is not None else None,
+            "last_synced_at": ss["last_synced_at"] if ss else None,
+            "oldest_event_ts": tm.get("oldest_ts"),
+        })
+    return jsonify({"rows": rows, "days": days})
+
+
+@app.route("/api/market/sync", methods=["POST"])
+def api_market_sync():
+    data = request.get_json() or {}
+    force = bool(data.get("force"))
+    db.init_db()
+
+    def generate():
+        now = int(_time.time())
+        with db.get_conn() as conn:
+            watchlist = db.list_watchlist(conn)
+        for w in watchlist:
+            slug = w["slug"]
+            try:
+                with db.get_conn() as conn:
+                    ss = db.get_market_sync_state(conn, slug)
+                if not force and ss and ss["last_synced_at"] and (now - ss["last_synced_at"]) < MARKET_SYNC_MIN_INTERVAL:
+                    yield f"data: {json.dumps({'type':'log','message':f'{slug}: skipped (fresh)'})}\n\n"
+                    continue
+                yield f"data: {json.dumps({'type':'log','message':f'{slug}: fetching floor + bid...'})}\n\n"
+                fp = fetch.fetch_floor_price(slug)
+                _time.sleep(0.25)
+                bo = fetch.fetch_best_offer(slug)
+                _time.sleep(0.25)
+                with db.get_conn() as conn:
+                    db.insert_floor_snapshot(conn, slug, fp, bo, now)
+                    if fp is not None or bo is not None:
+                        db.upsert_collection_floor(conn, slug, fp, bo, now)
+                after = max(
+                    (ss["last_event_ts"] if ss and ss["last_event_ts"] else 0),
+                    now - MARKET_BACKFILL_DAYS * 86400,
+                )
+                inserted = 0
+                def progress(page, n):
+                    pass
+                events = fetch.fetch_all_collection_sales(slug, after=after, progress_cb=progress)
+                with db.get_conn() as conn:
+                    for ev in events:
+                        if db.insert_market_trade(conn, ev):
+                            inserted += 1
+                    max_ts = max((e["block_timestamp"] for e in events), default=ss["last_event_ts"] if ss else 0) or 0
+                    db.set_market_sync_state(conn, slug, max_ts, now)
+                yield f"data: {json.dumps({'type':'log','message':f'{slug}: {inserted} new trades, floor={fp} bid={bo}'})}\n\n"
+            except Exception as exc:
+                yield f"data: {json.dumps({'type':'log','message':f'{slug}: ERROR {exc}'})}\n\n"
+        yield f"data: {json.dumps({'type':'done'})}\n\n"
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )
+
+
+@app.route("/api/market/trades/<slug>")
+def api_market_trades(slug):
+    days = request.args.get("days", 1, type=float)
+    db.init_db()
+    now = int(_time.time())
+    cutoff = int(now - days * 86400) if days > 0 else 0
+    with db.get_conn() as conn:
+        q = ("SELECT block_timestamp, eth_amount, buyer_address, seller_address, tx_hash, nft_id "
+             "FROM market_trades WHERE slug=?")
+        params = [slug]
+        if cutoff:
+            q += " AND block_timestamp>=?"
+            params.append(cutoff)
+        q += " ORDER BY block_timestamp DESC"
+        rows = conn.execute(q, params).fetchall()
+    return jsonify({"trades": [dict(r) for r in rows]})
+
+
+@app.route("/api/watchlist", methods=["POST"])
+def api_watchlist_add():
+    data = request.get_json() or {}
+    slug = (data.get("slug") or "").strip().lower()
+    if not slug:
+        return jsonify({"error": "slug is required"}), 400
+    try:
+        info = fetch.fetch_collection_info(slug)
+    except Exception:
+        return jsonify({"error": "Collection not found on OpenSea"}), 400
+    if not info.get("name"):
+        return jsonify({"error": "Collection not found on OpenSea"}), 400
+    db.init_db()
+    with db.get_conn() as conn:
+        db.add_watchlist(conn, slug, info["name"], info.get("contract_address", ""))
+    return jsonify({"slug": slug, "name": info["name"]}), 201
+
+
+@app.route("/api/watchlist/<slug>", methods=["DELETE"])
+def api_watchlist_remove(slug):
+    db.init_db()
+    with db.get_conn() as conn:
+        db.remove_watchlist(conn, slug.lower())
+    return jsonify({"ok": True})
 
 
 if __name__ == "__main__":
