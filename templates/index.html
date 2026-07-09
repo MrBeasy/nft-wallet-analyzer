@@ -324,7 +324,6 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
 <!-- ── Header ── -->
 <header class="hdr">
   <div class="hdr-l">
-    <button id="btn-back" class="btn btn-ghost hidden" onclick="navigate('/')">← Back</button>
     <a class="brand" href="#/" onclick="navigate('/')">
       <span class="brand-icon">◈</span>
       <span class="brand-name">NFT Player Analysis</span>
@@ -821,7 +820,6 @@ async function loadHome() {
   document.getElementById('view-dune').style.display = 'none';
   document.getElementById('view-collection').style.display = 'none';
   document.getElementById('view-benchmark').style.display = 'none';
-  document.getElementById('btn-back').classList.add('hidden');
   setNavActive('wallets');
   currentWallet = null;
   tradesLoaded = false;
@@ -1038,7 +1036,6 @@ async function loadDetail(address) {
   document.getElementById('view-dune').style.display = 'none';
   document.getElementById('view-collection').style.display = 'none';
   document.getElementById('view-benchmark').style.display = 'none';
-  document.getElementById('btn-back').classList.remove('hidden');
   setNavActive('wallets');
 
   // Sync filter button state
@@ -2080,7 +2077,6 @@ async function loadMeta() {
   document.getElementById('view-dune').style.display = 'none';
   document.getElementById('view-collection').style.display = 'none';
   document.getElementById('view-benchmark').style.display = 'none';
-  document.getElementById('btn-back').classList.add('hidden');
   setNavActive('meta');
 
   const loader  = document.getElementById('meta-loader');
@@ -2225,7 +2221,6 @@ async function loadCollection(addr) {
   document.getElementById('view-dune').style.display = 'none';
   document.getElementById('view-collection').style.display = '';
   document.getElementById('view-benchmark').style.display = 'none';
-  document.getElementById('btn-back').classList.remove('hidden');
   setNavActive('meta');
 
   // Reset tabs to Wallets
@@ -2673,7 +2668,6 @@ async function loadGraph() {
   document.getElementById('view-dune').style.display   = 'none';
   document.getElementById('view-collection').style.display = 'none';
   document.getElementById('view-benchmark').style.display = 'none';
-  document.getElementById('btn-back').classList.add('hidden');
   setNavActive('graph');
 
   if (!graphAllCols) {
@@ -3034,7 +3028,6 @@ async function loadDune() {
   document.getElementById('view-dune').style.display   = '';
   document.getElementById('view-collection').style.display = 'none';
   document.getElementById('view-benchmark').style.display = 'none';
-  document.getElementById('btn-back').classList.add('hidden');
   setNavActive('traders');
 
   if (!walletCache) {
@@ -3162,7 +3155,6 @@ async function loadBenchmark() {
   document.getElementById('view-dune').style.display = 'none';
   document.getElementById('view-collection').style.display = 'none';
   document.getElementById('view-benchmark').style.display = '';
-  document.getElementById('btn-back').classList.add('hidden');
   setNavActive('benchmark');
 
   // Restore timeframe button state
