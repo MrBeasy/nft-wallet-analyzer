@@ -257,7 +257,7 @@ def _diamond_score(avg_secs, flipper_days=7, trader_days=180):
     return                       {"label": "Diamond Hand"}
 
 
-def compute_player_card(trades, per_collection, summary, floor_data):
+def compute_player_card(trades, per_collection, summary, floor_data, open_positions=None):
     import time as _time
 
     timestamps = sorted(int(t["block_timestamp"]) for t in trades)
@@ -335,38 +335,25 @@ def compute_player_card(trades, per_collection, summary, floor_data):
     else:
         style_label = "Accumulator"
 
-    # Avg entry vs floor
-    addr_to_slug = {}
-    for t in trades:
-        slug = t["collection_slug"]
-        addr = t["collection_address"]
-        if slug and addr:
-            addr_to_slug[addr] = slug
-
-    entry_ratios = []
-    for addr, col in per_collection.items():
-        buy_eth = col.get("buy_eth", 0)
-        buys = col.get("buys", 0)
-        if not buy_eth or not buys:
-            continue
-        slug = addr_to_slug.get(addr)
-        if not slug:
-            continue
-        floor_eth = (floor_data.get(slug) or {}).get("floor_price_eth")
-        if not floor_eth or floor_eth <= 0:
-            continue
-        entry_ratios.append((buy_eth / buys) / floor_eth - 1)
-
-    if entry_ratios:
-        avg_evf = sum(entry_ratios) / len(entry_ratios)
-        if avg_evf < -0.05:
-            evf_label = "Below Floor"
-        elif avg_evf <= 0.05:
-            evf_label = "At Floor"
-        else:
-            evf_label = "Above Floor"
-    else:
-        avg_evf, evf_label = None, None
+    # uPnL vs floor — sum over individual open positions
+    upnl_eth = None
+    positions_with_floor = 0
+    total_open = sum(len(v) for v in open_positions.values()) if open_positions else 0
+    if open_positions and floor_data:
+        upnl_sum = 0.0
+        for buys in open_positions.values():
+            for b in buys:
+                slug = b.get("collection_slug")
+                floor_eth = (floor_data.get(slug) or {}).get("floor_price_eth")
+                if not floor_eth or floor_eth <= 0:
+                    continue
+                fee_bps = b.get("total_fee_bps") or 0
+                net = floor_eth * (1 - fee_bps / 10000)
+                cost = b["eth_amount"] + (b.get("gas_eth") or 0)
+                upnl_sum += net - cost
+                positions_with_floor += 1
+        if positions_with_floor:
+            upnl_eth = upnl_sum
 
     return {
         "wallet_age_days": wallet_age_days,
@@ -386,10 +373,10 @@ def compute_player_card(trades, per_collection, summary, floor_data):
             "batch_buys": batch_buys,
             "batch_sells": batch_sells,
         },
-        "avg_entry_vs_floor": {
-            "ratio": avg_evf,
-            "collections_with_floor": len(entry_ratios),
-            "label": evf_label,
+        "upnl_floor": {
+            "upnl_eth": upnl_eth,
+            "positions_with_floor": positions_with_floor,
+            "total_open": total_open,
         },
     }
 

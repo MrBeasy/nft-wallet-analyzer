@@ -1226,13 +1226,12 @@ function renderPlayerCard(pc, summary) {
   const botCls = bs.label === 'Clean' ? 'pos' : bs.label === 'Bot-like' ? 'neg' : '';
   const botStyle = bs.label === 'Suspicious' ? ' style="color:var(--yellow)"' : '';
 
-  // Entry vs floor
-  const evf = pc.avg_entry_vs_floor;
-  const evfVal = evf.ratio != null
-    ? (evf.ratio >= 0 ? '+' : '') + (evf.ratio * 100).toFixed(1) + '%' : '—';
-  const evfCls = evf.ratio == null ? '' : evf.ratio <= 0 ? 'pos' : 'neg';
-  const evfSub = evf.label
-    ? esc(evf.label) + ' · ' + evf.collections_with_floor + ' coll.' : 'No floor data';
+  // uPnL (floor)
+  const evf = pc.upnl_floor;
+  const evfVal = evf.upnl_eth != null ? fmtPnl(evf.upnl_eth) : '—';
+  const evfCls = evf.upnl_eth == null ? '' : evf.upnl_eth >= 0 ? 'pos' : 'neg';
+  const evfSub = evf.positions_with_floor
+    ? evf.positions_with_floor + '/' + evf.total_open + ' pos. with floor' : 'No floor data';
 
   // Collector style
   const cs = pc.collector_style;
@@ -1270,7 +1269,7 @@ function renderPlayerCard(pc, summary) {
           <div class="pc-sub">${bs.rapid_pairs} rapid pair${bs.rapid_pairs !== 1 ? 's' : ''}</div>
         </div>
         <div class="pc-metric">
-          <div class="pc-lbl" data-tip="Average buy price vs current floor price across collections (using cached floor data). Negative = bought below floor">Entry vs Floor</div>
+          <div class="pc-lbl" data-tip="Unrealized PnL if all open positions were sold at current floor price (after fees). Uses cached floor data.">uPNL (floor)</div>
           <div class="pc-val ${evfCls}">${evfVal}</div>
           <div class="pc-sub">${evfSub}</div>
         </div>

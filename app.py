@@ -115,7 +115,8 @@ def api_report(address):
         with db.get_conn() as conn:
             floor_data = db.get_cached_floors(conn, _slugs)
     player_card = analytics.compute_player_card(
-        trades, result["per_collection"], result["summary"], floor_data
+        trades, result["per_collection"], result["summary"], floor_data,
+        result["open_positions"]
     )
 
     # Strip non-serializable holding_times list
