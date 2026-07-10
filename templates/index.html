@@ -638,12 +638,17 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
 <main id="view-benchmark" style="display:none">
   <div class="meta-page-hdr">
     <h1>Benchmark</h1>
-    <p>Compare a wallet's performance against all other tracked wallets. Click a collection row to drill into that collection.</p>
+    <p>Compare a wallet's performance against all other tracked wallets — or set an opponent for a 1v1. Click a collection row to drill into that collection.</p>
   </div>
   <div class="meta-filters" style="align-items:flex-end">
     <div class="mf-group" style="flex:1;min-width:240px">
       <label class="mf-lbl">Wallet Address</label>
       <input id="bm-addr" class="mf-inp finp-mono" type="text" placeholder="0x..." autocomplete="off"
+        onkeydown="if(event.key==='Enter')runBenchmark()">
+    </div>
+    <div class="mf-group" style="flex:1;min-width:240px">
+      <label class="mf-lbl">1v1 Opponent (optional)</label>
+      <input id="bm-vs" class="mf-inp finp-mono" type="text" placeholder="0x... — empty = vs everyone" autocomplete="off"
         onkeydown="if(event.key==='Enter')runBenchmark()">
     </div>
     <div class="mf-group">
@@ -2596,7 +2601,10 @@ function makeHeaders(tableId, labels, defaultCol, defaultDir) {
   return labels.map((lbl, i) => {
     const alignCls = (i === labels.length - 1 && lbl === 'Tx') ? '' :
       ['Buys','Sells','Fee %','Avg Hold','Open','Win Rate','Trades','Collections','Last Synced','#','Total Trades','Your Trades','Others Trades','Your Hold','Others Hold'].includes(lbl) ? 'tc' :
-      ['Spent ETH','Rcvd ETH','Fees ETH','rPnL','uPnL (Floor)','ROI','ETH','Gas ETH','Cost ETH','Volume (USD)','Your ROI','Others ROI','Your PnL','Others PnL'].includes(lbl) ? 'tr' : '';
+      ['Spent ETH','Rcvd ETH','Fees ETH','rPnL','uPnL (Floor)','ROI','ETH','Gas ETH','Cost ETH','Volume (USD)','Your ROI','Others ROI','Your PnL','Others PnL'].includes(lbl) ? 'tr' :
+      // Dynamic labels (e.g. 1v1 opponent name prefixes) align by suffix
+      / (Trades|Hold)$/.test(lbl) ? 'tc' :
+      / (ROI|PnL)$/.test(lbl) ? 'tr' : '';
     return `<th class="${alignCls}" onclick="onThClick('${tableId}',${i})">${lbl}</th>`;
   }).join('');
 }
@@ -3285,7 +3293,7 @@ async function loadBenchmark() {
     if (walletCache && walletCache.length) {
       chipsEl.innerHTML = walletCache.map(w => {
         const short = w.address.slice(0, 6) + '…' + w.address.slice(-4);
-        return `<button class="wallet-chip" onclick="document.getElementById('bm-addr').value='${esc(w.address)}'" title="${esc(w.address)}">${esc(w.name || short)}</button>`;
+        return `<button class="wallet-chip" onclick="fillBenchmarkAddr('${esc(w.address)}')" title="${esc(w.address)}">${esc(w.name || short)}</button>`;
       }).join('');
     }
   } catch { chipsEl.innerHTML = ''; }
@@ -3304,6 +3312,30 @@ function setBenchmarkDays(d) {
     b.classList.toggle('active', parseInt(b.dataset.bmDays) === d));
 }
 
+// Chips fill the wallet field first; a second click sets the 1v1 opponent
+function fillBenchmarkAddr(addr) {
+  const addrEl = document.getElementById('bm-addr');
+  const vsEl = document.getElementById('bm-vs');
+  if (!addrEl.value.trim() || addrEl.value.trim().toLowerCase() === addr.toLowerCase()) {
+    addrEl.value = addr;
+  } else {
+    vsEl.value = addr;
+  }
+}
+
+// Returns the validated opponent address, '' for basket mode, or null on invalid input
+function benchmarkVsAddr(mainAddr) {
+  const vsEl = document.getElementById('bm-vs');
+  const vs = vsEl.value.trim().toLowerCase();
+  vsEl.classList.remove('err');
+  if (!vs) return '';
+  if (!/^0x[0-9a-fA-F]{40}$/.test(vs) || vs === mainAddr) {
+    vsEl.classList.add('err');
+    return null;
+  }
+  return vs;
+}
+
 async function runBenchmark() {
   const addrEl = document.getElementById('bm-addr');
   const addr = addrEl.value.trim().toLowerCase();
@@ -3312,6 +3344,8 @@ async function runBenchmark() {
     return;
   }
   addrEl.classList.remove('err');
+  const vs = benchmarkVsAddr(addr);
+  if (vs === null) return;
 
   const btn = document.getElementById('bm-run-btn');
   const loader = document.getElementById('bm-loader');
@@ -3326,7 +3360,8 @@ async function runBenchmark() {
 
   const t0 = Date.now();
   try {
-    const url = `/api/benchmark?wallet=${encodeURIComponent(addr)}&days=${benchmarkDays}`;
+    const url = `/api/benchmark?wallet=${encodeURIComponent(addr)}&days=${benchmarkDays}`
+      + (vs ? `&vs=${encodeURIComponent(vs)}` : '');
     const res = await fetch(url);
     const data = await res.json();
     if (!res.ok) {
@@ -3355,6 +3390,8 @@ async function runBenchmarkForCollection(colAddr) {
   const addrEl = document.getElementById('bm-addr');
   const addr = addrEl.value.trim().toLowerCase();
   if (!/^0x[0-9a-fA-F]{40}$/.test(addr)) return;
+  const vs = benchmarkVsAddr(addr);
+  if (vs === null) return;
 
   const btn = document.getElementById('bm-run-btn');
   const loader = document.getElementById('bm-loader');
@@ -3369,7 +3406,8 @@ async function runBenchmarkForCollection(colAddr) {
 
   const t0 = Date.now();
   try {
-    const url = `/api/benchmark?wallet=${encodeURIComponent(addr)}&days=${benchmarkDays}&collection=${encodeURIComponent(colAddr)}`;
+    const url = `/api/benchmark?wallet=${encodeURIComponent(addr)}&days=${benchmarkDays}&collection=${encodeURIComponent(colAddr)}`
+      + (vs ? `&vs=${encodeURIComponent(vs)}` : '');
     const res = await fetch(url);
     const data = await res.json();
     if (!res.ok) {
@@ -3395,9 +3433,16 @@ async function runBenchmarkForCollection(colAddr) {
   }
 }
 
+function benchmarkOpponentLabel(data) {
+  if (!data.vs_wallet) return 'Others';
+  const v = data.vs_wallet;
+  return v.name || (v.address.slice(0, 6) + '…' + v.address.slice(-4));
+}
+
 function renderBenchmarkSummary(data) {
   const ts = data.target_summary;
   const bs = data.basket_summary;
+  const oppLbl = esc(benchmarkOpponentLabel(data));
 
   // Share of total for additive metrics (always positive, so [0,100]%)
   const totalTrades = (ts.total_trades || 0) + (bs.total_trades || 0);
@@ -3424,7 +3469,7 @@ function renderBenchmarkSummary(data) {
     return (v > 0 ? '+' : v < 0 ? '−' : '') + fmt;
   };
   const fSub = (you, others) =>
-    `<span style="color:var(--subtle)">You</span> ${you}&nbsp;&nbsp;<span style="color:var(--subtle)">Others</span> ${others}`;
+    `<span style="color:var(--subtle)">You</span> ${you}&nbsp;&nbsp;<span style="color:var(--subtle)">${oppLbl}</span> ${others}`;
   const posneg = v => v == null ? '' : v > 0 ? 'pos' : v < 0 ? 'neg' : '';
 
   const cards = [
@@ -3489,7 +3534,15 @@ function renderBenchmarkSummary(data) {
   const bcount = bs.wallet_count;
 
   let contextDesc;
-  if (data.collection_filter) {
+  if (data.vs_wallet) {
+    contextDesc = `vs <span style="color:var(--text);font-weight:600">${oppLbl}</span> (1v1)`;
+    if (data.collection_filter) {
+      const colName = esc(data.collections[0]?.name || data.collection_filter.slice(0, 10) + '…');
+      contextDesc += ` in <span style="color:var(--text);font-weight:600">${colName}</span>`;
+    } else {
+      contextDesc += ` · ${data.collections.length} collection${data.collections.length !== 1 ? 's' : ''} shown below`;
+    }
+  } else if (data.collection_filter) {
     const colName = esc(data.collections[0]?.name || data.collection_filter.slice(0, 10) + '…');
     contextDesc = `in <span style="color:var(--text);font-weight:600">${colName}</span> vs ` +
       `<span style="color:var(--text);font-weight:600">${bcount} wallet${bcount !== 1 ? 's' : ''}</span> who traded this collection`;
@@ -3541,12 +3594,20 @@ function renderBenchmarkTable(data) {
   const sortCol = prev ? prev.sortCol : 7;
   const sortDir = prev ? prev.sortDir : -1;
 
+  const oppLbl = benchmarkOpponentLabel(data);
   const backBtn = data.collection_filter
     ? `<button class="fbtn" style="margin-left:auto" onclick="runBenchmark()">← All collections</button>`
     : '';
-  const hintText = data.collection_filter
-    ? `vs ${data.basket_summary.wallet_count} wallet${data.basket_summary.wallet_count !== 1 ? 's' : ''} in this collection · click row to view collection`
-    : `vs ${data.basket_summary.wallet_count} other wallet${data.basket_summary.wallet_count !== 1 ? 's' : ''} · click a row to compare in that collection`;
+  let hintText;
+  if (data.vs_wallet) {
+    hintText = data.collection_filter
+      ? `1v1 vs ${esc(oppLbl)} in this collection · click row to view collection`
+      : `1v1 vs ${esc(oppLbl)} · click a row to compare in that collection`;
+  } else {
+    hintText = data.collection_filter
+      ? `vs ${data.basket_summary.wallet_count} wallet${data.basket_summary.wallet_count !== 1 ? 's' : ''} in this collection · click row to view collection`
+      : `vs ${data.basket_summary.wallet_count} other wallet${data.basket_summary.wallet_count !== 1 ? 's' : ''} · click a row to compare in that collection`;
+  }
 
   wrap.innerHTML = `
     <div class="tab-hdr" style="margin-bottom:10px">
@@ -3558,7 +3619,7 @@ function renderBenchmarkTable(data) {
       <table id="tbl-bm-collections">
         <thead><tr>
           ${makeHeaders('bm-collections',
-            ['Collection','Your Trades','Others Trades','Your ROI','Others ROI','Your Hold','Others Hold','Your PnL','Others PnL'],
+            ['Collection','Your Trades',`${esc(oppLbl)} Trades`,'Your ROI',`${esc(oppLbl)} ROI`,'Your Hold',`${esc(oppLbl)} Hold`,'Your PnL',`${esc(oppLbl)} PnL`],
             sortCol, sortDir)}
         </tr></thead>
         <tbody></tbody>

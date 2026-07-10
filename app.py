@@ -638,11 +638,17 @@ def api_benchmark():
     import re as _re
 
     wallet_addr = request.args.get("wallet", "").strip().lower()
+    vs_addr = request.args.get("vs", "").strip().lower() or None
     days = request.args.get("days", 0, type=int)
     collection_filter = request.args.get("collection", "").strip().lower() or None
 
     if not wallet_addr or not _re.fullmatch(r"0x[0-9a-fA-F]{40}", wallet_addr):
         return jsonify({"error": "Invalid wallet address"}), 400
+    if vs_addr:
+        if not _re.fullmatch(r"0x[0-9a-fA-F]{40}", vs_addr):
+            return jsonify({"error": "Invalid opponent wallet address"}), 400
+        if vs_addr == wallet_addr:
+            return jsonify({"error": "Cannot compare a wallet against itself"}), 400
 
     since = int(_time.time() - days * 86400) if days else None
 
@@ -666,10 +672,13 @@ def api_benchmark():
         return jsonify({"error": "No collection data found."}), 404
 
     # Get basket wallet addresses.
+    # 1v1 mode: just the chosen opponent.
     # Default: ALL other wallets (full data, not restricted to shared collections).
     # Collection mode: wallets that traded that specific collection.
     with db.get_conn() as conn:
-        if collection_filter:
+        if vs_addr:
+            basket_rows = [{"wallet_address": vs_addr}]
+        elif collection_filter:
             if since:
                 basket_rows = conn.execute(
                     "SELECT DISTINCT wallet_address FROM trades WHERE wallet_address != ?"
@@ -715,6 +724,8 @@ def api_benchmark():
     basket_all_cost_basis_open = 0.0
     basket_open_data: list = []  # (cost, slug, fee_bps) per open position
 
+    basket_has_data = False
+
     with db.get_conn() as conn:
         for bw in basket_wallets:
             if since or collection_filter:
@@ -726,6 +737,7 @@ def api_benchmark():
                 bw_stats = get_cached_analytics(conn, bw)
             if not bw_stats:
                 continue
+            basket_has_data = True
             bs = bw_stats["summary"]
 
             # Full-basket summary accumulation (all their trades)
@@ -747,8 +759,10 @@ def api_benchmark():
                 basket_all_losses += cs.get("losses", 0)
                 basket_all_ht.extend(cs.get("holding_times") or [])
 
-                # Per-collection table: only accumulate for target wallet's collections
-                if col_addr not in target_collections:
+                # Per-collection table: only accumulate for target wallet's
+                # collections — except in 1v1, where opponent-only collections
+                # are shown too (union of both wallets)
+                if not vs_addr and col_addr not in target_collections:
                     continue
                 b = basket_per_col[col_addr]
                 if cs["name"]:
@@ -765,28 +779,39 @@ def api_benchmark():
                 b["holding_times"].extend(cs.get("holding_times") or [])
                 b["wallet_count"] += 1
 
-    # Build per-collection comparison list
+    if vs_addr and not basket_has_data:
+        msg = "Opponent has no trades in this time range." if since else "No trades found for opponent wallet."
+        return jsonify({"error": msg}), 404
+
+    # Build per-collection comparison list (1v1: union of both wallets' collections)
     collections_out = []
-    for col_addr in target_collections:
-        tc = target_stats["per_collection"][col_addr]
+    for col_addr in (target_collections | set(basket_per_col)):
+        tc = target_stats["per_collection"].get(col_addr) or {}
         bc = basket_per_col.get(col_addr, {})
 
-        t_ht = tc.get("holding_times") or []
-        t_wins, t_losses = tc.get("wins", 0), tc.get("losses", 0)
-        t_buy, t_pnl = tc.get("buy_eth", 0), tc.get("realized_pnl", 0)
+        if tc:
+            t_ht = tc.get("holding_times") or []
+            t_wins, t_losses = tc.get("wins", 0), tc.get("losses", 0)
+            t_buy, t_pnl = tc.get("buy_eth", 0), tc.get("realized_pnl", 0)
 
-        wallet_col = {
-            "buys": tc["buys"],
-            "sells": tc["sells"],
-            "buy_eth": round(t_buy, 4),
-            "roi": round(t_pnl / t_buy * 100, 2) if t_buy else None,
-            "avg_holding_secs": round(sum(t_ht) / len(t_ht), 1) if t_ht else None,
-            "realized_pnl": round(t_pnl, 4),
-            "wins": t_wins,
-            "losses": t_losses,
-            "win_rate": round(t_wins / (t_wins + t_losses) * 100, 1) if (t_wins + t_losses) > 0 else None,
-            "matched_trades": tc.get("matched_trades", 0),
-        }
+            wallet_col = {
+                "buys": tc["buys"],
+                "sells": tc["sells"],
+                "buy_eth": round(t_buy, 4),
+                "roi": round(t_pnl / t_buy * 100, 2) if t_buy else None,
+                "avg_holding_secs": round(sum(t_ht) / len(t_ht), 1) if t_ht else None,
+                "realized_pnl": round(t_pnl, 4),
+                "wins": t_wins,
+                "losses": t_losses,
+                "win_rate": round(t_wins / (t_wins + t_losses) * 100, 1) if (t_wins + t_losses) > 0 else None,
+                "matched_trades": tc.get("matched_trades", 0),
+            }
+        else:
+            wallet_col = {
+                "buys": 0, "sells": 0, "buy_eth": 0, "roi": None,
+                "avg_holding_secs": None, "realized_pnl": 0,
+                "wins": 0, "losses": 0, "win_rate": None, "matched_trades": 0,
+            }
 
         if bc:
             bc_ht = bc.get("holding_times") or []
@@ -878,12 +903,18 @@ def api_benchmark():
 
     with db.get_conn() as conn:
         wallet_row = db.get_wallet(conn, wallet_addr)
+        vs_row = db.get_wallet(conn, vs_addr) if vs_addr else None
 
     return jsonify({
         "wallet": {
             "address": wallet_addr,
             "name": wallet_row["name"] if wallet_row else None,
         },
+        "mode": "1v1" if vs_addr else "basket",
+        "vs_wallet": {
+            "address": vs_addr,
+            "name": vs_row["name"] if vs_row else None,
+        } if vs_addr else None,
         "timeframe_days": days,
         "collection_filter": collection_filter,
         "target_summary": target_summary,
