@@ -264,6 +264,8 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
   cursor:pointer;font-size:13px}
 .mkt-add-item:hover{background:var(--surface2)}
 .mkt-add-item.sel{border-color:var(--blue);background:rgba(88,166,255,.08)}
+.mkt-trades-lnk{color:var(--blue);text-decoration:underline;cursor:pointer}
+.mkt-trades-lnk:hover{color:var(--text)}
 .graph-dd-ct{font-size:11px;color:var(--subtle);white-space:nowrap}
 .graph-pills{display:flex;flex-wrap:wrap;gap:8px;min-height:24px}
 .graph-pill{display:inline-flex;align-items:center;gap:6px;padding:4px 10px 4px 8px;
@@ -3712,12 +3714,16 @@ function renderMarketRow(row) {
   const fpChg = r.fp_change_pct != null ? `<span class="${fpCls}"${fpTitle}>${r.fp_change_pct >= 0 ? '+' : ''}${r.fp_change_pct.toFixed(1)}%</span>` : '—';
   const dataLag = (r.oldest_event_ts && marketDays > 0 && r.oldest_event_ts > Date.now()/1000 - marketDays*86400)
     ? `<span title="Data only from ${fmtDate(r.oldest_event_ts)}" style="color:var(--muted);font-size:10px;margin-left:4px">partial</span>` : '';
-  return `<tr onclick="openMarketDetail('${esc(r.slug)}','${esc(r.name || r.slug)}')" style="cursor:pointer">
+  const openModal = `openMarketDetail('${esc(r.slug)}','${esc(r.name || r.slug)}')`;
+  const rowClick = r.contract_address
+    ? `navigate('/collection/${esc(r.contract_address)}')`
+    : openModal;
+  return `<tr onclick="${rowClick}" style="cursor:pointer">
     <td><span title="${esc(r.slug)}">${esc((r.name || r.slug).slice(0,30))}</span></td>
     <td class="mono tr">${fp}</td>
     <td class="tc">${fpChg}</td>
     <td class="mono tr">${bid}</td>
-    <td class="tc">${r.trades ?? 0}${dataLag}</td>
+    <td class="tc"><span class="mkt-trades-lnk" onclick="event.stopPropagation();${openModal}">${r.trades ?? 0}</span>${dataLag}</td>
     <td class="mono tr">${vol}</td>
   </tr>`;
 }

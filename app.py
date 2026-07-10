@@ -1163,6 +1163,11 @@ def api_market():
         oldest_map = {r["slug"]: r["oldest_ts"] for r in conn.execute(
             "SELECT slug, MIN(block_timestamp) AS oldest_ts FROM market_trades GROUP BY slug"
         ).fetchall()}
+        # Seeded watchlist rows lack a contract address; fall back to the
+        # collections table so the UI can link to the collection detail view
+        col_addr_map = {r["slug"]: r["contract_address"] for r in conn.execute(
+            "SELECT slug, contract_address FROM collections WHERE slug IS NOT NULL AND slug != ''"
+        ).fetchall()}
         for w in watchlist:
             slug = w["slug"]
             snap = db.get_latest_floor_snapshot(conn, slug)
@@ -1176,7 +1181,7 @@ def api_market():
             rows.append({
                 "slug": slug,
                 "name": w["name"],
-                "contract_address": w["contract_address"],
+                "contract_address": w["contract_address"] or col_addr_map.get(slug) or "",
                 "floor_eth": floor_eth,
                 "best_offer_eth": offer_eth,
                 "trades": tm.get("trades", 0),
@@ -1207,6 +1212,15 @@ def api_market_sync():
                 if not force and ss and ss["last_synced_at"] and (now - ss["last_synced_at"]) < MARKET_SYNC_MIN_INTERVAL:
                     yield f"data: {json.dumps({'type':'log','message':f'{slug}: skipped (fresh)'})}\n\n"
                     continue
+                if not w["contract_address"]:
+                    try:
+                        info = fetch.fetch_collection_info(slug, retries=1)
+                        if info.get("contract_address"):
+                            with db.get_conn() as conn:
+                                db.add_watchlist(conn, slug, info.get("name") or w["name"],
+                                                 info["contract_address"])
+                    except Exception:
+                        pass
                 yield f"data: {json.dumps({'type':'log','message':f'{slug}: fetching floor + bid...'})}\n\n"
                 fp = fetch.fetch_floor_price(slug)
                 _time.sleep(0.25)
