@@ -259,6 +259,11 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
   display:flex;justify-content:space-between;align-items:center;gap:8px}
 .graph-dd-item:hover,.graph-dd-item.active{background:var(--surface2)}
 .graph-dd-slug{font-family:var(--mono);font-size:11px;color:var(--muted)}
+.mkt-add-item{display:flex;justify-content:space-between;align-items:center;gap:8px;
+  padding:7px 10px;border:1px solid var(--border);border-radius:var(--r);margin-top:6px;
+  cursor:pointer;font-size:13px}
+.mkt-add-item:hover{background:var(--surface2)}
+.mkt-add-item.sel{border-color:var(--blue);background:rgba(88,166,255,.08)}
 .graph-dd-ct{font-size:11px;color:var(--subtle);white-space:nowrap}
 .graph-pills{display:flex;flex-wrap:wrap;gap:8px;min-height:24px}
 .graph-pill{display:inline-flex;align-items:center;gap:6px;padding:4px 10px 4px 8px;
@@ -695,23 +700,57 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
 
   <div id="mkt-overview" style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap"></div>
 
-  <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
-    <input id="mkt-add-input" type="text" placeholder="OpenSea slug, e.g. milady"
-      style="padding:6px 10px;background:var(--surface);border:1px solid var(--border);
-             border-radius:var(--r);color:var(--text);font-size:12px;width:240px"
-      onkeydown="if(event.key==='Enter')addToWatchlist()">
-    <button class="btn" style="font-size:12px;padding:6px 12px" onclick="addToWatchlist()">+ Add</button>
-    <span id="mkt-add-err" style="font-size:12px;color:var(--red);display:none"></span>
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+    <span style="font-size:13px;font-weight:600;color:var(--muted)">Watchlist</span>
+    <div style="display:flex;gap:6px">
+      <button class="btn" title="Add collection" onclick="openMarketAdd()"
+        style="color:var(--blue);font-size:15px;font-weight:700;padding:2px 12px;line-height:1.4">+</button>
+      <button class="btn" title="Remove collections" onclick="openMarketRemove()"
+        style="color:var(--red);font-size:15px;font-weight:700;padding:2px 12px;line-height:1.4">−</button>
+    </div>
   </div>
 
   <div id="mkt-table-wrap"></div>
+
+  <!-- Add-collection modal -->
+  <div id="m-mkt-add" class="moverlay" style="display:none" onclick="if(event.target===this)closeModal('m-mkt-add')">
+    <div class="modal modal-sm" onclick="event.stopPropagation()">
+      <div class="modal-hdr">
+        <h3>Add Collection</h3>
+        <button class="btn-close" onclick="closeModal('m-mkt-add')">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="fg">
+          <label class="flbl">Search by name or slug</label>
+          <input id="mkt-add-q" type="text" class="finp" placeholder="e.g. Milady Maker" autocomplete="off"
+            oninput="marketAddSearch()" onkeydown="if(event.key==='Enter'&&mktAddSel)confirmAddWatchlist()">
+        </div>
+        <div id="mkt-add-results"></div>
+        <span id="mkt-add-err" style="font-size:12px;color:var(--red);display:none"></span>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-primary btn-full" id="mkt-add-confirm" onclick="confirmAddWatchlist()" disabled>Add</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Remove-collections modal -->
+  <div id="m-mkt-remove" class="moverlay" style="display:none" onclick="if(event.target===this)closeModal('m-mkt-remove')">
+    <div class="modal modal-sm" onclick="event.stopPropagation()">
+      <div class="modal-hdr">
+        <h3>Remove Collections</h3>
+        <button class="btn-close" onclick="closeModal('m-mkt-remove')">✕</button>
+      </div>
+      <div class="modal-body" id="mkt-remove-list" style="max-height:50vh;overflow-y:auto"></div>
+    </div>
+  </div>
 
   <!-- Market detail modal -->
   <div id="m-mkt" class="moverlay" style="display:none" onclick="if(event.target===this)closeModal('m-mkt')">
     <div class="modal" onclick="event.stopPropagation()" style="max-width:860px;width:95%;max-height:85vh;overflow-y:auto">
       <div class="modal-hdr">
         <h3 id="mkt-modal-title">Trades</h3>
-        <button class="modal-close" onclick="closeModal('m-mkt')">✕</button>
+        <button class="btn-close" onclick="closeModal('m-mkt')">✕</button>
       </div>
       <div id="mkt-modal-body"><div class="loader"><div class="spinner"></div></div></div>
     </div>
@@ -2709,6 +2748,12 @@ function fmtDate(ts) {
   });
 }
 
+function fmtDateTime(ts) {
+  return new Date(ts * 1000).toLocaleString('en-US', {
+    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+  });
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Graph view
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3598,6 +3643,7 @@ async function fetchMarketData() {
     marketRows = data.rows || [];
     renderMarketOverview(marketRows);
     renderMarketTable(marketRows);
+    if (!marketSyncRunning) marketSyncLabel();
   } catch (e) {
     document.getElementById('mkt-table-wrap').innerHTML =
       `<p style="color:var(--muted);text-align:center">Failed to load market data.</p>`;
@@ -3648,7 +3694,7 @@ function renderMarketTable(rows) {
   wrap.innerHTML = `<div class="tbl-wrap">
     <table id="tbl-market">
       <thead><tr>
-        ${makeHeaders('market', ['Name','Floor Ξ','FP Δ%','Top Bid Ξ','Trades','Volume Ξ',''], sortCol, sortDir)}
+        ${makeHeaders('market', ['Name','Floor Ξ','FP Δ%','Top Bid Ξ','Trades','Volume Ξ'], sortCol, sortDir)}
       </tr></thead>
       <tbody></tbody>
     </table>
@@ -3662,7 +3708,8 @@ function renderMarketRow(row) {
   const bid = r.best_offer_eth != null ? r.best_offer_eth.toFixed(4) : '—';
   const vol = r.volume_eth != null ? r.volume_eth.toFixed(4) : '—';
   const fpCls = r.fp_change_pct != null ? (r.fp_change_pct >= 0 ? 'pos' : 'neg') : '';
-  const fpChg = r.fp_change_pct != null ? `<span class="${fpCls}">${r.fp_change_pct >= 0 ? '+' : ''}${r.fp_change_pct.toFixed(1)}%</span>` : '—';
+  const fpTitle = r.fp_change_since ? ` title="vs snapshot from ${fmtDateTime(r.fp_change_since)}"` : '';
+  const fpChg = r.fp_change_pct != null ? `<span class="${fpCls}"${fpTitle}>${r.fp_change_pct >= 0 ? '+' : ''}${r.fp_change_pct.toFixed(1)}%</span>` : '—';
   const dataLag = (r.oldest_event_ts && marketDays > 0 && r.oldest_event_ts > Date.now()/1000 - marketDays*86400)
     ? `<span title="Data only from ${fmtDate(r.oldest_event_ts)}" style="color:var(--muted);font-size:10px;margin-left:4px">partial</span>` : '';
   return `<tr onclick="openMarketDetail('${esc(r.slug)}','${esc(r.name || r.slug)}')" style="cursor:pointer">
@@ -3672,10 +3719,6 @@ function renderMarketRow(row) {
     <td class="mono tr">${bid}</td>
     <td class="tc">${r.trades ?? 0}${dataLag}</td>
     <td class="mono tr">${vol}</td>
-    <td style="padding:4px 6px">
-      <button class="btn" style="font-size:11px;padding:2px 8px;color:var(--red)"
-        onclick="event.stopPropagation();removeFromWatchlist('${esc(r.slug)}')">×</button>
-    </td>
   </tr>`;
 }
 
@@ -3709,21 +3752,75 @@ async function openMarketDetail(slug, name) {
   }
 }
 
-async function addToWatchlist() {
-  const inp = document.getElementById('mkt-add-input');
+let mktAddSel = null;
+let mktAddTimer = null;
+
+function openMarketAdd() {
+  mktAddSel = null;
+  document.getElementById('mkt-add-q').value = '';
+  document.getElementById('mkt-add-results').innerHTML = '';
+  document.getElementById('mkt-add-err').style.display = 'none';
+  document.getElementById('mkt-add-confirm').disabled = true;
+  document.getElementById('m-mkt-add').style.display = '';
+  document.getElementById('mkt-add-q').focus();
+}
+
+function marketAddSearch() {
+  clearTimeout(mktAddTimer);
+  const q = document.getElementById('mkt-add-q').value.trim();
+  if (q.length < 2) {
+    document.getElementById('mkt-add-results').innerHTML = '';
+    mktAddSel = null;
+    document.getElementById('mkt-add-confirm').disabled = true;
+    return;
+  }
+  mktAddTimer = setTimeout(async () => {
+    try {
+      const data = await fetch(`/api/watchlist/search?q=${encodeURIComponent(q)}`).then(r => r.json());
+      renderMktAddResults(data.results || []);
+    } catch {}
+  }, 300);
+}
+
+function renderMktAddResults(results) {
+  const wrap = document.getElementById('mkt-add-results');
+  mktAddSel = null;
+  document.getElementById('mkt-add-confirm').disabled = true;
+  if (!results.length) {
+    wrap.innerHTML = '<p style="color:var(--muted);font-size:12px;margin:8px 0 0">No matches.</p>';
+    return;
+  }
+  wrap.innerHTML = results.map(r =>
+    `<div class="mkt-add-item" data-slug="${esc(r.slug)}" data-name="${esc(r.name)}" onclick="selectMktAdd(this)">
+      <span>${esc(r.name)}</span>
+      <span class="graph-dd-slug">${esc(r.slug)}</span>
+    </div>`).join('');
+}
+
+function selectMktAdd(el) {
+  document.querySelectorAll('.mkt-add-item').forEach(d => d.classList.remove('sel'));
+  el.classList.add('sel');
+  mktAddSel = { slug: el.dataset.slug, name: el.dataset.name };
+  document.getElementById('mkt-add-confirm').disabled = false;
+}
+
+async function confirmAddWatchlist() {
+  if (!mktAddSel) return;
   const errEl = document.getElementById('mkt-add-err');
-  const slug = inp.value.trim().toLowerCase();
   errEl.style.display = 'none';
-  if (!slug) return;
   try {
-    const res = await fetch('/api/watchlist', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({slug}) });
+    const res = await fetch('/api/watchlist', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ slug: mktAddSel.slug }),
+    });
     if (!res.ok) {
       const e = await res.json().catch(() => ({}));
       errEl.textContent = e.error || 'Failed to add collection.';
       errEl.style.display = '';
       return;
     }
-    inp.value = '';
+    closeModal('m-mkt-add');
     await fetchMarketData();
   } catch {
     errEl.textContent = 'Request failed.';
@@ -3731,14 +3828,43 @@ async function addToWatchlist() {
   }
 }
 
+function openMarketRemove() {
+  renderMktRemoveList();
+  document.getElementById('m-mkt-remove').style.display = '';
+}
+
+function renderMktRemoveList() {
+  const wrap = document.getElementById('mkt-remove-list');
+  if (!marketRows.length) {
+    wrap.innerHTML = '<p style="color:var(--muted);font-size:12px">Watchlist is empty.</p>';
+    return;
+  }
+  wrap.innerHTML = [...marketRows]
+    .sort((a, b) => (a.name || a.slug).localeCompare(b.name || b.slug))
+    .map(r =>
+      `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--border)">
+        <span>${esc(r.name || r.slug)} <span class="graph-dd-slug">${esc(r.slug)}</span></span>
+        <button class="btn" style="font-size:11px;padding:2px 10px;color:var(--red)"
+          onclick="removeFromWatchlist('${esc(r.slug)}')">Remove</button>
+      </div>`).join('');
+}
+
 async function removeFromWatchlist(slug) {
   await fetch(`/api/watchlist/${encodeURIComponent(slug)}`, { method: 'DELETE' });
   await fetchMarketData();
+  if (document.getElementById('m-mkt-remove').style.display !== 'none') renderMktRemoveList();
+}
+
+function marketSyncLabel() {
+  const ts = Math.max(0, ...marketRows.map(r => r.last_synced_at || 0));
+  document.getElementById('mkt-sync-status').textContent =
+    ts ? 'Last synced ' + fmtDateTime(ts) : '';
 }
 
 async function runMarketSync({ force }) {
-  if (marketSyncRunning && !force) return;
+  if (marketSyncRunning) return;
   marketSyncRunning = true;
+  let failed = false;
   const statusEl = document.getElementById('mkt-sync-status');
   const logEl = document.getElementById('mkt-sync-log');
   const syncBtn = document.getElementById('mkt-sync-btn');
@@ -3768,15 +3894,17 @@ async function runMarketSync({ force }) {
         try {
           const msg = JSON.parse(line);
           if (msg.type === 'log') { logEl.textContent += msg.message + '\n'; logEl.scrollTop = logEl.scrollHeight; }
-          if (msg.type === 'done') { statusEl.textContent = 'Synced'; await fetchMarketData(); }
+          if (msg.type === 'done') { await fetchMarketData(); }
         } catch {}
       }
     }
   } catch {
-    statusEl.textContent = 'Sync failed';
+    failed = true;
   } finally {
     marketSyncRunning = false;
     if (syncBtn) syncBtn.disabled = false;
+    if (failed) statusEl.textContent = 'Sync failed';
+    else marketSyncLabel();
   }
 }
 </script>

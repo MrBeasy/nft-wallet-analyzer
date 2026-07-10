@@ -126,12 +126,12 @@ def get_conn() -> sqlite3.Connection:
 
 _MARKET_SEED = [
     ("cryptopunks",                 "CryptoPunks"),
-    ("chimpers",                    "Chimpers"),
+    ("chimpersnft",                 "Chimpers"),
     ("good-vibes-club",             "Good Vibes Club"),
     ("boredapeyachtclub",           "Bored Ape Yacht Club"),
     ("pudgypenguins",               "Pudgy Penguins"),
     ("quirkiesoriginals",           "Quirkies Originals"),
-    ("max-pain-and-frens",          "MAX PAIN AND FRENS"),
+    ("max-pain-and-frens-by-xcopy", "MAX PAIN AND FRENS"),
     ("vv-checks-originals",         "Checks - VV Originals"),
     ("moonbirds",                   "Moonbirds"),
     ("otherdeed-expanded",          "Otherdeed Expanded"),

@@ -1147,43 +1147,45 @@ def api_dune_top_traders():
 def api_market():
     days = request.args.get("days", 1, type=float)
     db.init_db()
+    now = int(_time.time())
+    cutoff = int(now - days * 86400) if days > 0 else 0
+    rows = []
     with db.get_conn() as conn:
         watchlist = db.list_watchlist(conn)
-        now = int(_time.time())
-        cutoff = int(now - days * 86400) if days > 0 else 0
         trade_rows = conn.execute(
-            "SELECT slug, COUNT(*) AS trades, SUM(eth_amount) AS volume, MIN(block_timestamp) AS oldest_ts "
+            "SELECT slug, COUNT(*) AS trades, SUM(eth_amount) AS volume "
             "FROM market_trades WHERE (:c=0 OR block_timestamp>=:c) GROUP BY slug",
             {"c": cutoff},
         ).fetchall()
         trade_map = {r["slug"]: dict(r) for r in trade_rows}
-    rows = []
-    for w in watchlist:
-        slug = w["slug"]
-        snap = None
-        old_snap = None
-        with db.get_conn() as conn:
+        # Oldest synced event per slug (unfiltered) so the UI can flag windows
+        # reaching past the synced backfill
+        oldest_map = {r["slug"]: r["oldest_ts"] for r in conn.execute(
+            "SELECT slug, MIN(block_timestamp) AS oldest_ts FROM market_trades GROUP BY slug"
+        ).fetchall()}
+        for w in watchlist:
+            slug = w["slug"]
             snap = db.get_latest_floor_snapshot(conn, slug)
-            if cutoff:
-                old_snap = db.get_floor_at(conn, slug, cutoff)
+            old_snap = db.get_floor_at(conn, slug, cutoff) if cutoff else None
             ss = db.get_market_sync_state(conn, slug)
-        tm = trade_map.get(slug, {})
-        floor_eth = snap["floor_eth"] if snap else None
-        offer_eth = snap["best_offer_eth"] if snap else None
-        old_floor = old_snap["floor_eth"] if old_snap else None
-        fp_change = (floor_eth - old_floor) / old_floor * 100 if (floor_eth is not None and old_floor and old_floor != 0) else None
-        rows.append({
-            "slug": slug,
-            "name": w["name"],
-            "contract_address": w["contract_address"],
-            "floor_eth": floor_eth,
-            "best_offer_eth": offer_eth,
-            "trades": tm.get("trades", 0),
-            "volume_eth": round(tm.get("volume") or 0, 4),
-            "fp_change_pct": round(fp_change, 2) if fp_change is not None else None,
-            "last_synced_at": ss["last_synced_at"] if ss else None,
-            "oldest_event_ts": tm.get("oldest_ts"),
-        })
+            tm = trade_map.get(slug, {})
+            floor_eth = snap["floor_eth"] if snap else None
+            offer_eth = snap["best_offer_eth"] if snap else None
+            old_floor = old_snap["floor_eth"] if old_snap else None
+            fp_change = (floor_eth - old_floor) / old_floor * 100 if (floor_eth is not None and old_floor and old_floor != 0) else None
+            rows.append({
+                "slug": slug,
+                "name": w["name"],
+                "contract_address": w["contract_address"],
+                "floor_eth": floor_eth,
+                "best_offer_eth": offer_eth,
+                "trades": tm.get("trades", 0),
+                "volume_eth": round(tm.get("volume") or 0, 4),
+                "fp_change_pct": round(fp_change, 2) if fp_change is not None else None,
+                "fp_change_since": old_snap["ts"] if fp_change is not None else None,
+                "last_synced_at": ss["last_synced_at"] if ss else None,
+                "oldest_event_ts": oldest_map.get(slug),
+            })
     return jsonify({"rows": rows, "days": days})
 
 
@@ -1219,14 +1221,19 @@ def api_market_sync():
                     now - MARKET_BACKFILL_DAYS * 86400,
                 )
                 inserted = 0
-                def progress(page, n):
-                    pass
-                events = fetch.fetch_all_collection_sales(slug, after=after, progress_cb=progress)
+                max_ts = ss["last_event_ts"] if ss and ss["last_event_ts"] else 0
+                for page, events, truncated in fetch.iter_collection_sales(slug, after=after):
+                    if page > 1:
+                        yield f"data: {json.dumps({'type':'log','message':f'{slug}: page {page} ({len(events)} sales)'})}\n\n"
+                    with db.get_conn() as conn:
+                        for ev in events:
+                            if db.insert_market_trade(conn, ev):
+                                inserted += 1
+                    if events:
+                        max_ts = max(max_ts, max(e["block_timestamp"] for e in events))
+                    if truncated:
+                        yield f"data: {json.dumps({'type':'log','message':f'{slug}: WARNING page cap hit, older events in this window were skipped'})}\n\n"
                 with db.get_conn() as conn:
-                    for ev in events:
-                        if db.insert_market_trade(conn, ev):
-                            inserted += 1
-                    max_ts = max((e["block_timestamp"] for e in events), default=ss["last_event_ts"] if ss else 0) or 0
                     db.set_market_sync_state(conn, slug, max_ts, now)
                 yield f"data: {json.dumps({'type':'log','message':f'{slug}: {inserted} new trades, floor={fp} bid={bo}'})}\n\n"
             except Exception as exc:
@@ -1256,6 +1263,37 @@ def api_market_trades(slug):
         q += " ORDER BY block_timestamp DESC"
         rows = conn.execute(q, params).fetchall()
     return jsonify({"trades": [dict(r) for r in rows]})
+
+
+@app.route("/api/watchlist/search")
+def api_watchlist_search():
+    import re as _re
+    q = (request.args.get("q") or "").strip()
+    if len(q) < 2:
+        return jsonify({"results": []})
+    db.init_db()
+    like = f"%{q}%"
+    with db.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT slug, name FROM collections "
+            "WHERE slug IS NOT NULL AND slug != '' AND (name LIKE ? OR slug LIKE ?) "
+            "ORDER BY name LIMIT 8",
+            (like, like),
+        ).fetchall()
+        watched = {r["slug"] for r in db.list_watchlist(conn)}
+    results = [{"slug": r["slug"], "name": r["name"] or r["slug"], "source": "local"}
+               for r in rows if r["slug"] not in watched]
+    # Also try the query as an OpenSea slug directly, so collections no tracked
+    # wallet ever traded are still findable
+    slug_guess = _re.sub(r"[^a-z0-9-]", "", q.lower().replace(" ", "-"))
+    if slug_guess and slug_guess not in watched and all(r["slug"] != slug_guess for r in results):
+        try:
+            info = fetch.fetch_collection_info(slug_guess, retries=1)
+            if info.get("name"):
+                results.insert(0, {"slug": slug_guess, "name": info["name"], "source": "opensea"})
+        except Exception:
+            pass
+    return jsonify({"results": results[:8]})
 
 
 @app.route("/api/watchlist", methods=["POST"])

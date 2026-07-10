@@ -52,12 +52,12 @@ def _get(url: str, params: dict, headers: dict = None, retries: int = 3) -> dict
 
 # ── OpenSea ──────────────────────────────────────────────────────────────────
 
-def fetch_collection_info(slug: str) -> dict:
+def fetch_collection_info(slug: str, retries: int = 3) -> dict:
     """
     Returns dict with keys: creator_fee_bps, opensea_fee_bps, name, contract_address.
     """
     url = f"{OPENSEA_BASE}/collections/{slug}"
-    data = _get(url, {}, _opensea_headers())
+    data = _get(url, {}, _opensea_headers(), retries=retries)
 
     creator_fee_bps = 0
     opensea_fee_bps = 0
@@ -98,18 +98,38 @@ def fetch_floor_price(slug: str) -> float | None:
 
 
 def fetch_best_offer(slug: str) -> float | None:
-    """Returns best collection offer in ETH, or None if no offers exist."""
+    """Returns best collection offer in ETH per item, or None if no offers exist.
+
+    Collection offers can span multiple items and price.value is the offer
+    total, so normalize by the offer quantity before comparing.
+    """
     url = f"{OPENSEA_BASE}/offers/collection/{slug}"
-    params = {"order_by": "eth_price", "order_direction": "desc", "limit": 1}
+    params = {"order_by": "eth_price", "order_direction": "desc", "limit": 100}
     data = _get(url, params, _opensea_headers())
-    offers = data.get("offers") or []
-    if not offers:
-        return None
-    try:
-        raw = offers[0]["price"]["value"]
-        return int(raw) / 1e18
-    except (KeyError, TypeError, ValueError):
-        return None
+    best = None
+    for o in data.get("offers") or []:
+        price = o.get("price") or {}
+        if (price.get("currency") or "").upper() not in ("ETH", "WETH"):
+            continue
+        try:
+            total = int(price.get("value")) / 1e18
+        except (TypeError, ValueError):
+            continue
+        qty = 1
+        params_ = (o.get("protocol_data") or {}).get("parameters") or {}
+        for item in params_.get("consideration") or []:
+            # itemType 4/5 = ERC721/ERC1155 with criteria: startAmount is the
+            # number of NFTs the offer covers
+            if item.get("itemType") in (4, 5):
+                try:
+                    qty = max(1, int(item.get("startAmount") or 1))
+                except (TypeError, ValueError):
+                    qty = 1
+                break
+        per_unit = total / qty
+        if best is None or per_unit > best:
+            best = per_unit
+    return best
 
 
 def fetch_wallet_nfts(wallet_address: str) -> set:
@@ -296,20 +316,19 @@ def fetch_collection_sale_events(slug: str, after: int = None,
     return events, next_cursor
 
 
-def fetch_all_collection_sales(slug: str, after: int, progress_cb=None) -> list:
-    """Paginate all collection sale events since `after` (unix ts). Hard cap 200 pages."""
-    all_events = []
+def iter_collection_sales(slug: str, after: int, max_pages: int = 200):
+    """Yield (page, events, truncated) per page of collection sale events since
+    `after` (unix ts). `truncated` is True on the final yield if the page cap
+    was hit while more pages remained."""
     cursor = None
-    for page in range(1, 201):
+    for page in range(1, max_pages + 1):
         events, next_cursor = fetch_collection_sale_events(slug, after=after, cursor=cursor)
-        if progress_cb:
-            progress_cb(page, len(events))
-        all_events.extend(events)
-        if not next_cursor or not events:
-            break
+        done = not next_cursor or not events
+        yield page, events, (page == max_pages and not done)
+        if done or page == max_pages:
+            return
         cursor = next_cursor
         time.sleep(0.3)
-    return all_events
 
 
 # ── Etherscan ─────────────────────────────────────────────────────────────────
