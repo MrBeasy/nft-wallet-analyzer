@@ -1299,7 +1299,7 @@ def api_market_trades(slug):
     now = int(_time.time())
     cutoff = int(now - days * 86400) if days > 0 else 0
     with db.get_conn() as conn:
-        q = ("SELECT block_timestamp, eth_amount, buyer_address, seller_address, tx_hash, nft_id "
+        q = ("SELECT block_timestamp, eth_amount, buyer_address, seller_address, tx_hash, nft_id, sell_type "
              "FROM market_trades WHERE slug=?")
         params = [slug]
         if cutoff:

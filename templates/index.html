@@ -2760,8 +2760,26 @@ function fmtDate(ts) {
 
 function fmtDateTime(ts) {
   return new Date(ts * 1000).toLocaleString('en-US', {
-    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+    month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit'
   });
+}
+
+function timeAgo(ts) {
+  const s = Math.max(0, Math.floor(Date.now() / 1000 - ts));
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m} min${m === 1 ? '' : 's'} ago`;
+  const h = Math.floor(m / 60);
+  if (h < 48) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
+let mktTimeRel = localStorage.getItem('mktTimeRel') === '1';
+
+function toggleMktTimeRel(tId, on) {
+  mktTimeRel = on;
+  localStorage.setItem('mktTimeRel', on ? '1' : '0');
+  refreshTable(tId);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3772,7 +3790,8 @@ function renderMarketRow(row) {
   const vol = r.volume_eth != null ? r.volume_eth.toFixed(4) : '—';
   const fpCls = r.fp_change_pct != null ? (r.fp_change_pct >= 0 ? 'pos' : 'neg') : '';
   const fpTitle = r.fp_change_since ? ` title="vs snapshot from ${fmtDateTime(r.fp_change_since)}"` : '';
-  const fpChg = r.fp_change_pct != null ? `<span class="${fpCls}"${fpTitle}>${r.fp_change_pct >= 0 ? '+' : ''}${r.fp_change_pct.toFixed(1)}%</span>` : '—';
+  const fpSince = r.fp_change_since ? `<span style="color:var(--muted);font-size:10px;margin-left:4px">vs ${timeAgo(r.fp_change_since)}</span>` : '';
+  const fpChg = r.fp_change_pct != null ? `<span class="${fpCls}"${fpTitle}>${r.fp_change_pct >= 0 ? '+' : ''}${r.fp_change_pct.toFixed(1)}%</span>${fpSince}` : '—';
   const dataLag = (r.oldest_event_ts && marketDays > 0 && r.oldest_event_ts > Date.now()/1000 - marketDays*86400)
     ? `<span title="Data only from ${fmtDate(r.oldest_event_ts)}" style="color:var(--muted);font-size:10px;margin-left:4px">partial</span>` : '';
   const openModal = `openMarketDetail('${esc(r.slug)}','${esc(r.name || r.slug)}')`;
@@ -3800,19 +3819,29 @@ async function openMarketDetail(slug, name) {
       document.getElementById('mkt-modal-body').innerHTML = '<p style="color:var(--muted);text-align:center;padding:24px">No trades in this window.</p>';
       return;
     }
-    const rows = trades.map(t => [t.block_timestamp, t.eth_amount, t.seller_address, t.buyer_address, t.tx_hash, t.nft_id, t]);
+    const rows = trades.map(t => [t.block_timestamp, t.sell_type, t.eth_amount, t.seller_address, t.buyer_address, t.tx_hash, t.nft_id, t]);
     const tId = 'mkt-detail-' + slug;
-    document.getElementById('mkt-modal-body').innerHTML = `<div class="tbl-wrap"><table id="tbl-${tId}">
-      <thead><tr>${makeHeaders(tId, ['Time','Ξ','Seller','Buyer','Tx','NFT ID'], 0, -1)}</tr></thead>
+    document.getElementById('mkt-modal-body').innerHTML = `
+      <div style="display:flex;justify-content:flex-end;margin-bottom:6px">
+        <label style="font-size:11px;color:var(--muted);cursor:pointer;user-select:none">
+          <input type="checkbox" ${mktTimeRel ? 'checked' : ''} onchange="toggleMktTimeRel('${tId}', this.checked)"> time ago
+        </label>
+      </div>
+      <div class="tbl-wrap"><table id="tbl-${tId}">
+      <thead><tr>${makeHeaders(tId, ['Time','Type','Ξ','Seller','Buyer','Tx','NFT ID'], 0, -1)}</tr></thead>
       <tbody></tbody></table></div>`;
     const shorten = a => a ? `<a href="https://etherscan.io/address/${esc(a)}" target="_blank" class="tx-lnk" onclick="event.stopPropagation()">${a.slice(0,6)}…${a.slice(-4)}</a>` : '—';
+    const typeCell = st => st === 'listing' ? '<span class="pos">Listing</span>' :
+                           st === 'bid'     ? '<span class="neg">Dump</span>' :
+                           '<span style="color:var(--muted)">—</span>';
     initTable(tId, rows, r => `<tr>
-      <td>${fmtDate(r[0])}</td>
-      <td class="mono tr">${r[1].toFixed(4)}</td>
-      <td class="mono">${shorten(r[2])}</td>
+      <td title="${fmtDateTime(r[0])}">${mktTimeRel ? timeAgo(r[0]) : fmtDateTime(r[0])}</td>
+      <td class="tc">${typeCell(r[1])}</td>
+      <td class="mono tr">${r[2].toFixed(4)}</td>
       <td class="mono">${shorten(r[3])}</td>
-      <td>${r[4] ? `<a href="https://etherscan.io/tx/${esc(r[4])}" target="_blank" class="tx-lnk" onclick="event.stopPropagation()">${r[4].slice(0,8)}…</a>` : '—'}</td>
-      <td class="mono">${esc(r[5] || '')}</td>
+      <td class="mono">${shorten(r[4])}</td>
+      <td>${r[5] ? `<a href="https://etherscan.io/tx/${esc(r[5])}" target="_blank" class="tx-lnk" onclick="event.stopPropagation()">${r[5].slice(0,8)}…</a>` : '—'}</td>
+      <td class="mono">${esc(r[6] || '')}</td>
     </tr>`, 0, -1);
   } catch {
     document.getElementById('mkt-modal-body').innerHTML = '<p style="color:var(--muted);text-align:center;padding:24px">Failed to load trades.</p>';

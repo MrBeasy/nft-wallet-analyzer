@@ -304,6 +304,14 @@ def fetch_collection_sale_events(slug: str, after: int = None,
         buyer_raw = ev.get("buyer") or ""
         seller = (seller_raw.get("address", "") if isinstance(seller_raw, dict) else str(seller_raw)).lower()
         buyer = (buyer_raw.get("address", "") if isinstance(buyer_raw, dict) else str(buyer_raw)).lower()
+        # maker == seller → listing sale; maker == buyer → offer accepted (bid dump)
+        maker_raw = ev.get("maker") or ""
+        maker = (maker_raw.get("address", "") if isinstance(maker_raw, dict) else str(maker_raw)).lower()
+        sell_type = None
+        if maker and maker == seller:
+            sell_type = "listing"
+        elif maker and maker == buyer:
+            sell_type = "bid"
         events.append({
             "slug": slug,
             "tx_hash": (ev.get("transaction") or "").lower(),
@@ -312,6 +320,7 @@ def fetch_collection_sale_events(slug: str, after: int = None,
             "buyer_address": buyer,
             "seller_address": seller,
             "nft_id": str(nft.get("identifier", "")),
+            "sell_type": sell_type,
         })
     return events, next_cursor
 

@@ -162,6 +162,7 @@ def init_db():
             "ALTER TABLE collections ADD COLUMN best_offer_eth REAL",
             "ALTER TABLE collections ADD COLUMN floor_fetched_at INTEGER",
             "ALTER TABLE trades ADD COLUMN sell_type TEXT",
+            "ALTER TABLE market_trades ADD COLUMN sell_type TEXT",
         ]:
             try:
                 conn.execute(col_def)
@@ -400,9 +401,10 @@ def insert_market_trade(conn, row: dict) -> bool:
     try:
         conn.execute(
             "INSERT INTO market_trades (slug, tx_hash, block_timestamp, eth_amount, "
-            "buyer_address, seller_address, nft_id) VALUES (?,?,?,?,?,?,?)",
+            "buyer_address, seller_address, nft_id, sell_type) VALUES (?,?,?,?,?,?,?,?)",
             (row["slug"], row["tx_hash"], row["block_timestamp"], row["eth_amount"],
-             row.get("buyer_address", ""), row.get("seller_address", ""), row.get("nft_id", "")),
+             row.get("buyer_address", ""), row.get("seller_address", ""), row.get("nft_id", ""),
+             row.get("sell_type")),
         )
         return True
     except sqlite3.IntegrityError:
