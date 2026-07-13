@@ -324,7 +324,16 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
 .bm-row{display:flex;align-items:baseline;justify-content:space-between;gap:6px}
 .bm-lbl{font-size:10px;color:var(--subtle);text-transform:uppercase;letter-spacing:.4px;flex-shrink:0}
 .bm-val{font-size:15px;font-weight:700;font-family:var(--mono);letter-spacing:-.2px}
+
+/* ── Col Trading view ── */
+.ct-row{display:flex;align-items:center;gap:8px;padding:6px 4px;cursor:pointer;border-radius:4px;transition:background .1s}
+.ct-row:hover{background:var(--surface2)}
+.ct-check{width:14px;height:14px;border-radius:3px;flex-shrink:0;border:1.5px solid;display:flex;align-items:center;justify-content:center}
+.ct-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+.ct-label{flex:1;min-width:0}
 </style>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 </head>
 <body>
 
@@ -342,6 +351,7 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
       <button class="nav-btn" id="nav-graph" onclick="navigate('/graph')">Graph</button>
       <button class="nav-btn" id="nav-traders" onclick="navigate('/traders')">OS Traders</button>
       <button class="nav-btn" id="nav-benchmark" onclick="navigate('/benchmark')">Benchmark</button>
+      <button class="nav-btn" id="nav-coltrades" onclick="navigate('/coltrades')">Col Trading</button>
     </nav>
   </div>
   <div>
@@ -596,6 +606,88 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
     <p style="margin-top:8px;font-size:13px;color:var(--muted)">Running Dune query…</p>
   </div>
   <div id="dune-table-wrap"></div>
+</main>
+
+<!-- ── Col Trading view ── -->
+<main id="view-coltrades" style="display:none">
+  <div class="graph-page-hdr" style="margin-bottom:16px">
+    <h1>Col Trading</h1>
+    <p>Bid/listing ratio and avg sale price per collection — rolling window</p>
+  </div>
+
+  <div style="margin-bottom:16px">
+    <div class="filter-btns">
+      <button class="fbtn active" id="ct-tab-chart"  onclick="ctSwitchTab('chart')">Chart</button>
+      <button class="fbtn"        id="ct-tab-spread" onclick="ctSwitchTab('spread')">Spread Ranking</button>
+    </div>
+  </div>
+
+  <div id="ct-view-chart">
+    <div style="display:flex;gap:0;align-items:flex-start">
+      <div id="ct-sidebar" style="width:200px;flex-shrink:0;border:1px solid var(--border);
+        border-radius:var(--r);background:var(--surface);padding:12px 10px;
+        max-height:560px;overflow-y:auto;margin-right:16px">
+        <div style="font-size:10px;font-weight:700;text-transform:uppercase;
+          letter-spacing:.1em;color:var(--muted);margin-bottom:8px">Collections</div>
+        <div id="ct-coll-list"><span style="font-size:12px;color:var(--subtle)">Loading…</span></div>
+      </div>
+
+      <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:12px">
+        <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end">
+          <div>
+            <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Rolling Window</div>
+            <div class="filter-btns" id="ct-win-btns">
+              <button class="fbtn" data-v="7"  onclick="ctSetWin(7)">7d</button>
+              <button class="fbtn" data-v="14" onclick="ctSetWin(14)">14d</button>
+              <button class="fbtn active" data-v="30" onclick="ctSetWin(30)">30d</button>
+              <button class="fbtn" data-v="60" onclick="ctSetWin(60)">60d</button>
+              <button class="fbtn" data-v="90" onclick="ctSetWin(90)">90d</button>
+            </div>
+          </div>
+          <div>
+            <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Metric</div>
+            <div class="filter-btns" id="ct-metric-btns">
+              <button class="fbtn active" data-v="listing" onclick="ctSetMetric('listing')">Listing %</button>
+              <button class="fbtn"        data-v="dump"    onclick="ctSetMetric('dump')">Bid Dump %</button>
+            </div>
+          </div>
+          <div>
+            <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Price Scale</div>
+            <div class="filter-btns" id="ct-scale-btns">
+              <button class="fbtn active" data-v="linear" onclick="ctSetScale('linear')">Linear</button>
+              <button class="fbtn"        data-v="log"    onclick="ctSetScale('log')">Log</button>
+            </div>
+          </div>
+          <div>
+            <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Date Range</div>
+            <div class="filter-btns" id="ct-range-btns">
+              <button class="fbtn active" data-v="all" onclick="ctSetRange('all')">All</button>
+              <button class="fbtn"        data-v="1y"  onclick="ctSetRange('1y')">1Y</button>
+              <button class="fbtn"        data-v="6m"  onclick="ctSetRange('6m')">6M</button>
+              <button class="fbtn"        data-v="3m"  onclick="ctSetRange('3m')">3M</button>
+              <button class="fbtn"        data-v="1m"  onclick="ctSetRange('1m')">1M</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="graph-chart-container" style="position:relative;min-height:420px">
+          <canvas id="ct-chart" style="display:block;width:100%!important;height:420px!important"></canvas>
+          <div id="ct-empty" style="display:flex;position:absolute;inset:0;
+            align-items:center;justify-content:center;color:var(--muted);font-size:14px;pointer-events:none">
+            Select a collection to begin
+          </div>
+          <div id="ct-spinner" style="display:none;position:absolute;inset:0;
+            align-items:center;justify-content:center;background:rgba(13,17,23,.6)">
+            <div class="spinner"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="ct-view-spread" style="display:none">
+    <div id="ct-spread-wrap"></div>
+  </div>
 </main>
 
 <!-- ── Collection detail view ── -->
@@ -903,6 +995,8 @@ function router() {
     loadBenchmark();
   } else if (h === '#/wallets') {
     loadHome();
+  } else if (h === '#/coltrades') {
+    loadColTrades();
   } else {
     loadMarket();  // '#/' and legacy '#/market'
   }
@@ -915,6 +1009,7 @@ function setNavActive(view) {
   document.getElementById('nav-traders').classList.toggle('active', view === 'traders');
   document.getElementById('nav-benchmark').classList.toggle('active', view === 'benchmark');
   document.getElementById('nav-market').classList.toggle('active', view === 'market');
+  document.getElementById('nav-coltrades').classList.toggle('active', view === 'coltrades');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -936,6 +1031,7 @@ async function loadHome() {
   document.getElementById('view-collection').style.display = 'none';
   document.getElementById('view-benchmark').style.display = 'none';
   document.getElementById('view-market').style.display = 'none';
+  document.getElementById('view-coltrades').style.display = 'none';
   setNavActive('wallets');
   currentWallet = null;
   tradesLoaded = false;
@@ -1153,6 +1249,7 @@ async function loadDetail(address) {
   document.getElementById('view-collection').style.display = 'none';
   document.getElementById('view-benchmark').style.display = 'none';
   document.getElementById('view-market').style.display = 'none';
+  document.getElementById('view-coltrades').style.display = 'none';
   setNavActive('wallets');
 
   // Sync filter button state
@@ -2195,6 +2292,7 @@ async function loadMeta() {
   document.getElementById('view-collection').style.display = 'none';
   document.getElementById('view-benchmark').style.display = 'none';
   document.getElementById('view-market').style.display = 'none';
+  document.getElementById('view-coltrades').style.display = 'none';
   setNavActive('meta');
 
   const loader  = document.getElementById('meta-loader');
@@ -2340,6 +2438,7 @@ async function loadCollection(addr) {  // eslint-disable-line no-unused-vars
   document.getElementById('view-collection').style.display = '';
   document.getElementById('view-benchmark').style.display = 'none';
   document.getElementById('view-market').style.display = 'none';
+  document.getElementById('view-coltrades').style.display = 'none';
   setNavActive('meta');
 
   // Reset tabs to Wallets
@@ -2608,8 +2707,8 @@ function hideSyncToast() {
 function makeHeaders(tableId, labels, defaultCol, defaultDir) {
   return labels.map((lbl, i) => {
     const alignCls = (i === labels.length - 1 && lbl === 'Tx') ? '' :
-      ['Buys','Sells','Fee %','Avg Hold','Open','Win Rate','Trades','Collections','Last Synced','#','Total Trades','Your Trades','Others Trades','Your Hold','Others Hold'].includes(lbl) ? 'tc' :
-      ['Spent ETH','Rcvd ETH','Fees ETH','rPnL','uPnL (Floor)','ROI','ETH','Gas ETH','Cost ETH','Volume (USD)','Your ROI','Others ROI','Your PnL','Others PnL'].includes(lbl) ? 'tr' :
+      ['Buys','Sells','Fee %','Avg Hold','Open','Win Rate','Trades','Collections','Last Synced','#','Total Trades','Your Trades','Others Trades','Your Hold','Others Hold','Sales/Day All','Sales/Day 30d','Days'].includes(lbl) ? 'tc' :
+      ['Spent ETH','Rcvd ETH','Fees ETH','rPnL','uPnL (Floor)','ROI','ETH','Gas ETH','Cost ETH','Volume (USD)','Your ROI','Others ROI','Your PnL','Others PnL','Net Spread %','Gross %','Net Ξ','EV (Ξ)','Floor Ξ','Offer Ξ'].includes(lbl) ? 'tr' :
       // Dynamic labels (e.g. 1v1 opponent name prefixes) align by suffix
       / (Trades|Hold)$/.test(lbl) ? 'tc' :
       / (ROI|PnL)$/.test(lbl) ? 'tr' : '';
@@ -2815,6 +2914,7 @@ async function loadGraph() {
   document.getElementById('view-collection').style.display = 'none';
   document.getElementById('view-benchmark').style.display = 'none';
   document.getElementById('view-market').style.display = 'none';
+  document.getElementById('view-coltrades').style.display = 'none';
   setNavActive('graph');
 
   if (!graphAllCols) {
@@ -3176,6 +3276,7 @@ async function loadDune() {
   document.getElementById('view-collection').style.display = 'none';
   document.getElementById('view-benchmark').style.display = 'none';
   document.getElementById('view-market').style.display = 'none';
+  document.getElementById('view-coltrades').style.display = 'none';
   setNavActive('traders');
 
   if (!walletCache) {
@@ -3304,6 +3405,7 @@ async function loadBenchmark() {
   document.getElementById('view-collection').style.display = 'none';
   document.getElementById('view-benchmark').style.display = '';
   document.getElementById('view-market').style.display = 'none';
+  document.getElementById('view-coltrades').style.display = 'none';
   setNavActive('benchmark');
 
   // Restore timeframe button state
@@ -3801,7 +3903,7 @@ let marketSyncRunning = false;
 
 async function loadMarket() {
   ['view-home','view-detail','view-meta','view-graph','view-dune',
-   'view-collection','view-benchmark'].forEach(id =>
+   'view-collection','view-benchmark','view-coltrades'].forEach(id =>
     document.getElementById(id).style.display = 'none');
   document.getElementById('view-market').style.display = '';
   setNavActive('market');
@@ -4093,6 +4195,335 @@ async function runMarketSync({ force }) {
     if (failed) statusEl.textContent = 'Sync failed';
     else marketSyncLabel();
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Col Trading view
+// ─────────────────────────────────────────────────────────────────────────────
+
+const CT_PALETTE = ['#58a6ff','#3fb950','#f85149','#d29922','#bc8cff',
+                    '#ff7b72','#79c0ff','#56d364','#ffa657','#e3b341'];
+const CT_AGG_COLOR = '#e6edf3';
+
+const ctS = {
+  collections: [], colors: new Map(), selected: new Set(), cache: {},
+  window: 30, metric: 'listing', scale: 'linear', range: 'all',
+  showAggregate: false, activeSubTab: 'chart',
+};
+let ctChart = null;
+
+function ctCssVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+async function loadColTrades() {
+  ['view-home','view-detail','view-meta','view-graph','view-dune',
+   'view-collection','view-benchmark','view-market'].forEach(
+    id => document.getElementById(id).style.display = 'none'
+  );
+  document.getElementById('view-coltrades').style.display = '';
+  setNavActive('coltrades');
+  if (!ctS.collections.length) {
+    try {
+      const r = await fetch('/api/coldata/collections');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const data = await r.json();
+      if (!Array.isArray(data)) throw new Error(data.error || 'bad response');
+      ctS.collections = data;
+      ctS.collections.forEach((c, i) => ctS.colors.set(c.slug, CT_PALETTE[i % CT_PALETTE.length]));
+    } catch {
+      ctS.collections = [];
+      document.getElementById('ct-coll-list').innerHTML =
+        '<span style="font-size:12px;color:var(--red)">Failed to load collections.</span>';
+      return;  // keep the error message; don't render sidebar over it
+    }
+  }
+  ctRenderSidebar();
+  ctSwitchTab(ctS.activeSubTab);
+}
+
+function ctSwitchTab(tab) {
+  ctS.activeSubTab = tab;
+  document.getElementById('ct-tab-chart').classList.toggle('active',  tab === 'chart');
+  document.getElementById('ct-tab-spread').classList.toggle('active', tab === 'spread');
+  document.getElementById('ct-view-chart').style.display  = tab === 'chart'  ? '' : 'none';
+  document.getElementById('ct-view-spread').style.display = tab === 'spread' ? '' : 'none';
+  if (tab === 'spread') ctRenderSpreadTable();
+}
+
+function ctRenderSidebar() {
+  const el = document.getElementById('ct-coll-list');
+  if (!el) return;
+  el.innerHTML = '';
+  const aggCk = ctS.showAggregate;
+  const aggItem = document.createElement('div');
+  aggItem.className = 'ct-row';
+  aggItem.innerHTML = `
+    <div class="ct-check" style="border-color:${aggCk ? CT_AGG_COLOR : 'var(--border)'};background:${aggCk ? CT_AGG_COLOR : 'transparent'}">
+      ${aggCk ? '<svg width="9" height="7" viewBox="0 0 9 7"><polyline points="1,4 3.5,6.5 8,1" stroke="#000" stroke-width="1.5" fill="none"/></svg>' : ''}
+    </div>
+    <div class="ct-dot" style="background:${CT_AGG_COLOR}"></div>
+    <div class="ct-label">
+      <div style="font-size:12px;color:var(--text)">All Collections</div>
+      <div style="font-size:10px;color:var(--muted)">equal-weighted avg</div>
+    </div>`;
+  aggItem.addEventListener('click', async () => {
+    ctS.showAggregate = !ctS.showAggregate;
+    if (ctS.showAggregate) await ctLoadAllCollections();
+    ctRenderSidebar(); ctRedraw();
+  });
+  el.appendChild(aggItem);
+  const sep = document.createElement('div');
+  sep.style.cssText = 'height:1px;background:var(--border2);margin:8px 0';
+  el.appendChild(sep);
+  ctS.collections.forEach(coll => {
+    const color = ctS.colors.get(coll.slug);
+    const ck    = ctS.selected.has(coll.slug);
+    const item  = document.createElement('div');
+    item.className = 'ct-row';
+    item.innerHTML = `
+      <div class="ct-check" style="border-color:${ck ? color : 'var(--border)'};background:${ck ? color : 'transparent'}">
+        ${ck ? '<svg width="9" height="7" viewBox="0 0 9 7"><polyline points="1,4 3.5,6.5 8,1" stroke="#000" stroke-width="1.5" fill="none"/></svg>' : ''}
+      </div>
+      <div class="ct-dot" style="background:${color}"></div>
+      <div class="ct-label">
+        <div style="font-size:12px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc(coll.name)}">${esc(coll.name)}</div>
+        <div style="font-size:10px;color:var(--muted)">${coll.floor_price_eth != null ? coll.floor_price_eth.toFixed(4) + ' Ξ floor' : ''}</div>
+      </div>`;
+    item.addEventListener('click', () => ctToggle(coll.slug));
+    el.appendChild(item);
+  });
+}
+
+async function ctLoadCollection(slug) {
+  if (ctS.cache[slug]) return;
+  document.getElementById('ct-spinner').style.display = 'flex';
+  try {
+    const r = await fetch(`/api/coldata/chart?collections=${encodeURIComponent(slug)}`);
+    if (!r.ok) return;
+    const j = await r.json();
+    if (j[slug]) ctS.cache[slug] = j[slug];
+  } finally { document.getElementById('ct-spinner').style.display = 'none'; }
+}
+
+async function ctLoadAllCollections() {
+  const uncached = ctS.collections.filter(c => !ctS.cache[c.slug]);
+  if (!uncached.length) return;
+  document.getElementById('ct-spinner').style.display = 'flex';
+  try {
+    const slugs = uncached.map(c => c.slug).join(',');
+    const r = await fetch(`/api/coldata/chart?collections=${encodeURIComponent(slugs)}`);
+    if (!r.ok) return;
+    const j = await r.json();
+    for (const [slug, data] of Object.entries(j)) ctS.cache[slug] = data;
+  } finally { document.getElementById('ct-spinner').style.display = 'none'; }
+}
+
+async function ctToggle(slug) {
+  ctS.selected.has(slug) ? ctS.selected.delete(slug) : ctS.selected.add(slug);
+  if (ctS.selected.has(slug)) await ctLoadCollection(slug);
+  ctRenderSidebar(); ctRedraw();
+}
+
+function ctSetActiveBtn(groupId, v) {
+  document.querySelectorAll(`#${groupId} .fbtn`).forEach(b =>
+    b.classList.toggle('active', b.dataset.v === String(v)));
+}
+function ctSetWin(v)    { ctS.window = v; ctSetActiveBtn('ct-win-btns',    v); ctRedraw(); }
+function ctSetMetric(v) { ctS.metric = v; ctSetActiveBtn('ct-metric-btns', v); ctRedraw(); }
+function ctSetScale(v)  { ctS.scale  = v; ctSetActiveBtn('ct-scale-btns',  v); ctRedraw(); }
+function ctSetRange(v)  { ctS.range  = v; ctSetActiveBtn('ct-range-btns',  v); ctRedraw(); }
+
+function ctRollingRatio(data, win, metric) {
+  const n = data.days.length, out = new Array(n);
+  let bs = 0, ls = 0, left = 0;
+  for (let i = 0; i < n; i++) {
+    bs += data.bids[i]; ls += data.listings[i];
+    while (i - left + 1 > win) { bs -= data.bids[left]; ls -= data.listings[left]; left++; }
+    const total = bs + ls;
+    out[i] = { x: data.days[i], y: total > 0 ? (metric === 'dump' ? bs : ls) / total * 100 : null };
+  }
+  return out;
+}
+
+function ctDailyPrice(data) {
+  return data.days.map((day, i) => ({
+    x: day, y: data.sale_count[i] > 0 ? data.total_price[i] / data.sale_count[i] : null,
+  }));
+}
+
+function ctFilterRange(pts, range) {
+  if (range === 'all') return pts;
+  const ms = { '1m': 30, '3m': 90, '6m': 180, '1y': 365 }[range] * 86400000;
+  const cutoff = new Date(Date.now() - ms).toISOString().slice(0, 10);
+  return pts.filter(p => p.x >= cutoff);
+}
+
+function ctBuildAggregate(win, metric, range) {
+  const rMap = new Map(), pMap = new Map();
+  for (const { slug } of ctS.collections) {
+    const d = ctS.cache[slug];
+    if (!d) continue;
+    for (const pt of ctRollingRatio(d, win, metric))
+      if (pt.y != null) { if (!rMap.has(pt.x)) rMap.set(pt.x, []); rMap.get(pt.x).push(pt.y); }
+    for (const pt of ctDailyPrice(d))
+      if (pt.y != null) { if (!pMap.has(pt.x)) pMap.set(pt.x, []); pMap.get(pt.x).push(pt.y); }
+  }
+  const avg = a => a.reduce((s, v) => s + v, 0) / a.length;
+  const toSorted = m => Array.from(m.entries()).sort(([a], [b]) => a.localeCompare(b))
+    .map(([x, ys]) => ({ x, y: avg(ys) }));
+  return {
+    ratioData: ctFilterRange(toSorted(rMap), range),
+    priceData: ctFilterRange(toSorted(pMap), range),
+  };
+}
+
+function ctBuildDatasets() {
+  const ds = [];
+  for (const slug of ctS.selected) {
+    const d = ctS.cache[slug];
+    if (!d) continue;
+    const name  = ctS.collections.find(c => c.slug === slug)?.name ?? slug;
+    const color = ctS.colors.get(slug);
+    ds.push({ label: `${name} — ${ctS.metric === 'dump' ? 'Bid Dump %' : 'Listing %'}`,
+      data: ctFilterRange(ctRollingRatio(d, ctS.window, ctS.metric), ctS.range),
+      borderColor: color, backgroundColor: color + '18', yAxisID: 'yR',
+      borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: .25, spanGaps: true });
+    ds.push({ label: `${name} — Avg Price (Ξ)`,
+      data: ctFilterRange(ctDailyPrice(d), ctS.range),
+      borderColor: color, backgroundColor: 'transparent', yAxisID: 'yP',
+      borderWidth: 1.5, borderDash: [6, 3], pointRadius: 0, tension: .25, spanGaps: true });
+  }
+  if (ctS.showAggregate) {
+    const { ratioData, priceData } = ctBuildAggregate(ctS.window, ctS.metric, ctS.range);
+    ds.push({ label: `All — ${ctS.metric === 'dump' ? 'Bid Dump %' : 'Listing %'} (avg)`,
+      data: ratioData, borderColor: CT_AGG_COLOR, backgroundColor: CT_AGG_COLOR + '18',
+      yAxisID: 'yR', borderWidth: 2.5, pointRadius: 0, tension: .25, spanGaps: true });
+    ds.push({ label: 'All — Avg Price (Ξ)',
+      data: priceData, borderColor: CT_AGG_COLOR, backgroundColor: 'transparent',
+      yAxisID: 'yP', borderWidth: 2, borderDash: [6, 3], pointRadius: 0, tension: .25, spanGaps: true });
+  }
+  return ds;
+}
+
+function ctRedraw() {
+  const datasets = ctBuildDatasets();
+  document.getElementById('ct-empty').style.display = datasets.length ? 'none' : 'flex';
+  const canvas = document.getElementById('ct-chart');
+  if (!canvas) return;
+  if (ctChart) { ctChart.destroy(); ctChart = null; }
+  if (!datasets.length) return;
+  const muted   = ctCssVar('--muted');
+  const surface = ctCssVar('--surface');
+  const surf2   = ctCssVar('--surface2');
+  const textCol = ctCssVar('--text');
+  const border  = ctCssVar('--border');
+  ctChart = new Chart(canvas.getContext('2d'), {
+    type: 'line',
+    data: { datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      interaction: { mode: 'x', intersect: false },
+      plugins: {
+        legend: { position: 'top', labels: { color: muted, font: { size: 11 }, boxWidth: 18, padding: 12 } },
+        tooltip: {
+          backgroundColor: surface, titleColor: textCol, bodyColor: muted,
+          borderColor: border, borderWidth: 1, padding: 10,
+          callbacks: {
+            label(c) {
+              const v = c.parsed.y;
+              if (v == null) return null;
+              return c.dataset.yAxisID === 'yR'
+                ? `  ${c.dataset.label}: ${v.toFixed(1)}%`
+                : `  ${c.dataset.label}: ${v.toFixed(4)} Ξ`;
+            }
+          }
+        },
+      },
+      scales: {
+        x: { type: 'time', time: { tooltipFormat: 'MMM d, yyyy' },
+          grid: { color: surf2 }, ticks: { color: muted, maxTicksLimit: 10 } },
+        yR: { type: 'linear', position: 'left', min: 0, max: 100,
+          grid: { color: surf2 }, ticks: { color: muted, callback: v => v + '%' },
+          title: { display: true,
+            text: ctS.metric === 'dump' ? 'Bid Dump % of Sales' : 'Listing % of Sales',
+            color: muted, font: { size: 10 } } },
+        yP: { type: ctS.scale === 'log' ? 'logarithmic' : 'linear',
+          position: 'right', min: ctS.scale === 'log' ? undefined : 0,
+          grid: { display: false },
+          ticks: { color: muted, callback: v => v.toFixed(3) + 'Ξ' },
+          title: { display: true, text: 'Daily Avg Sale Price (Ξ)', color: muted, font: { size: 10 } } },
+      },
+    },
+  });
+}
+
+// Row indices 0–10 map 1:1 to 11 visible header columns; [11] = full collection object
+function ctRenderSpreadTable() {
+  const wrap = document.getElementById('ct-spread-wrap');
+  if (!wrap || !ctS.collections.length) {
+    if (wrap) wrap.innerHTML = '<div class="no-data">No data loaded.</div>';
+    return;
+  }
+  const ev = c => (c.floor_price_eth != null && c.avg_net_spread_pct != null && c.avg_daily_sales_30d != null)
+    ? c.floor_price_eth * (c.avg_net_spread_pct / 100) * (c.avg_daily_sales_30d / 2) : null;
+  const rows = ctS.collections.map(c => [
+    (c.name || c.slug || '').toLowerCase(),
+    c.avg_net_spread_pct,
+    c.avg_gross_spread_pct,
+    c.avg_net_spread_eth,
+    c.avg_daily_sales_alltime,
+    c.avg_daily_sales_30d,
+    c.total_trades,
+    ev(c),
+    c.floor_price_eth,
+    c.best_offer_eth,
+    c.spread_pair_count,
+    c,
+  ]);
+  const prev    = tbls['ct-spread'];
+  const sortCol = prev ? prev.sortCol : 1;
+  const sortDir = prev ? prev.sortDir : -1;
+  wrap.innerHTML = `
+    <div class="tbl-wrap">
+      <table id="tbl-ct-spread">
+        <thead><tr>
+          ${makeHeaders('ct-spread',
+            ['Name','Net Spread %','Gross %','Net Ξ','Sales/Day All','Sales/Day 30d','Trades','EV (Ξ)','Floor Ξ','Offer Ξ','Days'],
+            sortCol, sortDir)}
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>`;
+  initTable('ct-spread', rows, ctRenderSpreadRow, sortCol, sortDir);
+}
+
+function ctRenderSpreadRow(row) {
+  const c     = row[11];
+  const color = ctS.colors.get(c.slug) || 'var(--muted)';
+  const ev    = (c.floor_price_eth != null && c.avg_net_spread_pct != null && c.avg_daily_sales_30d != null)
+    ? c.floor_price_eth * (c.avg_net_spread_pct / 100) * (c.avg_daily_sales_30d / 2) : null;
+  const pct = v => v == null ? '—' : `<span class="${v >= 0 ? 'pos' : 'neg'}">${v >= 0 ? '+' : ''}${v.toFixed(2)}%</span>`;
+  const eth = v => v == null ? '—' : `<span class="${v >= 0 ? 'pos' : 'neg'}">${v >= 0 ? '+' : ''}${v.toFixed(4)}</span>`;
+  const num = (v, d = 1) => v != null ? v.toFixed(d) : '—';
+  return `<tr>
+    <td>
+      <div style="display:flex;align-items:center;gap:8px">
+        <div style="width:7px;height:7px;border-radius:50%;background:${color};flex-shrink:0"></div>
+        <span title="${esc(c.name)}" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.name || c.slug)}</span>
+      </div>
+    </td>
+    <td class="mono tr">${pct(c.avg_net_spread_pct)}</td>
+    <td class="mono tr">${pct(c.avg_gross_spread_pct)}</td>
+    <td class="mono tr">${eth(c.avg_net_spread_eth)}</td>
+    <td class="tc">${num(c.avg_daily_sales_alltime)}</td>
+    <td class="tc">${num(c.avg_daily_sales_30d)}</td>
+    <td class="tc">${c.total_trades != null ? c.total_trades.toLocaleString() : '—'}</td>
+    <td class="mono tr">${eth(ev)}</td>
+    <td class="mono tr">${c.floor_price_eth != null ? c.floor_price_eth.toFixed(4) : '—'}</td>
+    <td class="mono tr">${c.best_offer_eth  != null ? c.best_offer_eth.toFixed(4)  : '—'}</td>
+    <td class="tc">${c.spread_pair_count ?? '—'}</td>
+  </tr>`;
 }
 </script>
 </body>

@@ -6,7 +6,8 @@ import os
 import subprocess
 import sys
 import time as _time
-from datetime import datetime, timezone as _tz
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone as _tz
 
 log = logging.getLogger(__name__)
 
@@ -1365,6 +1366,67 @@ def api_watchlist_remove(slug):
     with db.get_conn() as conn:
         db.remove_watchlist(conn, slug.lower())
     return jsonify({"ok": True})
+
+
+# ── API: Col Trading (sister project's market-wide sales data) ────────────────
+
+@app.route("/api/coldata/collections")
+def api_coldata_collections():
+    db.init_db()
+    with db.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT slug, COALESCE(name, slug) AS name, floor_price_eth, "
+            "best_offer_eth, total_fee_bps, "
+            "avg_gross_spread_eth, avg_net_spread_eth, "
+            "avg_gross_spread_pct, avg_net_spread_pct, spread_pair_count, "
+            "avg_daily_sales_alltime, avg_daily_sales_30d, total_trades "
+            "FROM collections "
+            "WHERE avg_net_spread_pct IS NOT NULL "
+            "   OR slug IN (SELECT collection_slug FROM collection_sync_state) "
+            "ORDER BY name"
+        ).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route("/api/coldata/chart")
+def api_coldata_chart():
+    slugs = [s.strip() for s in request.args.get("collections", "").split(",") if s.strip()]
+    if not slugs:
+        return jsonify({})
+    db.init_db()
+    result = {}
+    with db.get_conn() as conn:
+        for slug in slugs:
+            rows = conn.execute(
+                "SELECT timestamp, price_eth, sale_type FROM sales "
+                "WHERE collection_slug = ? ORDER BY timestamp", (slug,)
+            ).fetchall()
+            if not rows:
+                continue
+            daily = defaultdict(lambda: {"bids": 0, "listings": 0, "total_price": 0.0, "sale_count": 0})
+            for row in rows:
+                day = datetime.fromtimestamp(row["timestamp"], tz=_tz.utc).strftime("%Y-%m-%d")
+                daily[day]["total_price"] += row["price_eth"]
+                daily[day]["sale_count"]  += 1
+                if row["sale_type"] == "bid":
+                    daily[day]["bids"] += 1
+                else:
+                    daily[day]["listings"] += 1
+            start = datetime.fromtimestamp(rows[0]["timestamp"],  tz=_tz.utc).date()
+            end   = datetime.fromtimestamp(rows[-1]["timestamp"], tz=_tz.utc).date()
+            all_days = []
+            d = start
+            while d <= end:
+                all_days.append(d.isoformat())
+                d += timedelta(days=1)
+            result[slug] = {
+                "days":        all_days,
+                "bids":        [daily[d]["bids"]         for d in all_days],
+                "listings":    [daily[d]["listings"]     for d in all_days],
+                "total_price": [round(daily[d]["total_price"], 4) for d in all_days],
+                "sale_count":  [daily[d]["sale_count"]   for d in all_days],
+            }
+    return jsonify(result)
 
 
 if __name__ == "__main__":
