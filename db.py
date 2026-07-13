@@ -114,6 +114,28 @@ CREATE TABLE IF NOT EXISTS market_sync_state (
     last_event_ts  INTEGER DEFAULT 0,
     last_synced_at INTEGER
 );
+
+CREATE TABLE IF NOT EXISTS sales (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    collection_slug TEXT    NOT NULL,
+    tx_hash         TEXT    NOT NULL,
+    nft_id          TEXT    NOT NULL,
+    timestamp       INTEGER NOT NULL,
+    price_eth       REAL    NOT NULL,
+    payment_token   TEXT,
+    sale_type       TEXT,
+    seller          TEXT,
+    buyer           TEXT,
+    UNIQUE(tx_hash, nft_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sales_slug_ts ON sales(collection_slug, timestamp);
+
+CREATE TABLE IF NOT EXISTS collection_sync_state (
+    collection_slug     TEXT PRIMARY KEY,
+    oldest_ts_fetched   INTEGER,
+    last_synced_at      INTEGER
+);
 """
 
 
@@ -163,6 +185,15 @@ def init_db():
             "ALTER TABLE collections ADD COLUMN floor_fetched_at INTEGER",
             "ALTER TABLE trades ADD COLUMN sell_type TEXT",
             "ALTER TABLE market_trades ADD COLUMN sell_type TEXT",
+            "ALTER TABLE collections ADD COLUMN avg_gross_spread_eth REAL",
+            "ALTER TABLE collections ADD COLUMN avg_net_spread_eth REAL",
+            "ALTER TABLE collections ADD COLUMN avg_gross_spread_pct REAL",
+            "ALTER TABLE collections ADD COLUMN avg_net_spread_pct REAL",
+            "ALTER TABLE collections ADD COLUMN spread_pair_count INTEGER",
+            "ALTER TABLE collections ADD COLUMN spread_updated_at INTEGER",
+            "ALTER TABLE collections ADD COLUMN avg_daily_sales_alltime REAL",
+            "ALTER TABLE collections ADD COLUMN avg_daily_sales_30d REAL",
+            "ALTER TABLE collections ADD COLUMN total_trades INTEGER",
         ]:
             try:
                 conn.execute(col_def)
@@ -436,6 +467,124 @@ def get_floor_at(conn, slug: str, cutoff_ts: int):
     return conn.execute(
         "SELECT * FROM floor_history WHERE slug=? ORDER BY ts ASC LIMIT 1", (slug,)
     ).fetchone()
+
+
+# ---------- collection trading data (sales / spread, fed by update_collections.py) ----------
+
+def upsert_collection_market(conn, collection: dict, prices: dict):
+    """Upsert a sister-pipeline collection sweep, keyed by contract_address.
+
+    Floor/offer use COALESCE so a sweep that failed to fetch a price doesn't
+    null out a value another code path cached.
+    """
+    import time as _time
+    ca = (collection.get("contract_address") or "").strip().lower()
+    if not ca:
+        return False
+    now = int(_time.time())
+    floor = prices.get("floor")
+    conn.execute("""
+        INSERT INTO collections
+            (contract_address, slug, name, creator_fee_bps, opensea_fee_bps,
+             total_fee_bps, floor_price_eth, best_offer_eth, fetched_at, floor_fetched_at)
+        VALUES (:ca, :slug, :name, :creator_fee_bps, :opensea_fee_bps,
+                :total_fee_bps, :floor, :best_offer, :now, :floor_fetched_at)
+        ON CONFLICT(contract_address) DO UPDATE SET
+            slug             = excluded.slug,
+            name             = excluded.name,
+            creator_fee_bps  = excluded.creator_fee_bps,
+            opensea_fee_bps  = excluded.opensea_fee_bps,
+            total_fee_bps    = excluded.total_fee_bps,
+            floor_price_eth  = COALESCE(excluded.floor_price_eth, floor_price_eth),
+            best_offer_eth   = COALESCE(excluded.best_offer_eth, best_offer_eth),
+            fetched_at       = excluded.fetched_at,
+            floor_fetched_at = COALESCE(excluded.floor_fetched_at, floor_fetched_at)
+    """, {
+        "ca": ca,
+        "slug": collection["slug"],
+        "name": collection.get("name"),
+        "creator_fee_bps": collection.get("creator_fee_bps"),
+        "opensea_fee_bps": collection.get("opensea_fee_bps"),
+        "total_fee_bps": collection.get("total_fee_bps"),
+        "floor": floor,
+        "best_offer": prices.get("best_offer"),
+        "now": now,
+        "floor_fetched_at": now if floor is not None else None,
+    })
+    conn.commit()
+    return True
+
+
+def update_collection_spread(conn, contract_address: str, spread: dict):
+    """Persist computed daily-avg spread + volume stats for a collection."""
+    import time as _time
+    conn.execute("""
+        UPDATE collections
+        SET avg_gross_spread_eth    = :avg_gross_spread_eth,
+            avg_net_spread_eth      = :avg_net_spread_eth,
+            avg_gross_spread_pct    = :avg_gross_spread_pct,
+            avg_net_spread_pct      = :avg_net_spread_pct,
+            spread_pair_count       = :pair_count,
+            spread_updated_at       = :updated_at,
+            avg_daily_sales_alltime = :avg_daily_sales_alltime,
+            avg_daily_sales_30d     = :avg_daily_sales_30d,
+            total_trades            = :total_trades
+        WHERE contract_address = :ca
+    """, {**spread, "ca": contract_address.lower(), "updated_at": int(_time.time())})
+    conn.commit()
+
+
+def insert_sales(conn, slug: str, events: list) -> int:
+    """Insert sale events, skipping duplicates. Returns number of new rows."""
+    rows = [
+        (slug, e["tx_hash"], e["nft_id"], e["timestamp"], e["price_eth"],
+         e["payment_token"], e["sale_type"], e["seller"], e["buyer"])
+        for e in events
+    ]
+    cur = conn.executemany("""
+        INSERT OR IGNORE INTO sales
+            (collection_slug, tx_hash, nft_id, timestamp, price_eth,
+             payment_token, sale_type, seller, buyer)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, rows)
+    conn.commit()
+    return cur.rowcount
+
+
+def get_sales(conn, slug: str, since_ts: int = 0) -> list:
+    rows = conn.execute("""
+        SELECT nft_id, tx_hash, timestamp, price_eth, payment_token, sale_type, seller, buyer
+        FROM sales
+        WHERE collection_slug = ? AND timestamp >= ?
+        ORDER BY timestamp DESC
+    """, (slug, since_ts)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_coldata_sync_state(conn, slug: str):
+    row = conn.execute(
+        "SELECT oldest_ts_fetched, last_synced_at FROM collection_sync_state WHERE collection_slug = ?",
+        (slug,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def update_coldata_sync_state(conn, slug: str, oldest_ts: int):
+    import time as _time
+    conn.execute("""
+        INSERT INTO collection_sync_state (collection_slug, oldest_ts_fetched, last_synced_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(collection_slug) DO UPDATE SET
+            oldest_ts_fetched = MIN(oldest_ts_fetched, excluded.oldest_ts_fetched),
+            last_synced_at    = excluded.last_synced_at
+    """, (slug, oldest_ts, int(_time.time())))
+    conn.commit()
+
+
+def list_coldata_slugs(conn) -> list:
+    return [r["collection_slug"] for r in conn.execute(
+        "SELECT collection_slug FROM collection_sync_state ORDER BY collection_slug"
+    ).fetchall()]
 
 
 # ---------- market sync state ----------

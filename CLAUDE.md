@@ -14,12 +14,14 @@ Flask + SQLite tool that syncs a wallet's NFT trade history from OpenSea and com
 | `analytics.py` | FIFO PnL matching, per-collection stats (wins/losses/holding times), `compute_analytics()` |
 | `app.py` | Flask server — all API routes + SSE sync streaming |
 | `main.py` | CLI wrapper (`sync`, `report`, `trades`, `wallet` subcommands) |
+| `update_collections.py` | Cron-able sync of market-wide collection sales + spread stats (`sales`, `collection_sync_state` tables) — feeds the Dump/Listing Buy Ratio tab |
 | `templates/index.html` | Single-page frontend (vanilla JS, hash router, sortable tables) |
 
 ## DB Schema (key tables)
 - `trades` — one row per buy/sell event: `wallet_address, tx_hash, block_timestamp, side, eth_amount, gas_eth, collection_address, collection_slug, nft_id`
-- `collections` — `contract_address PK, slug, name, creator_fee_bps, opensea_fee_bps, total_fee_bps`
+- `collections` — `contract_address PK, slug, name, creator_fee_bps, opensea_fee_bps, total_fee_bps` + floor/offer cache + spread/volume stats
 - `sync_state` — `wallet_address PK, last_cursor, full_sync_complete`
+- `sales` — market-wide per-collection sale events (`sale_type` bid/listing); synced by `update_collections.py`, cursor in `collection_sync_state`
 - `wallets` — optional labels/notes per address
 - `wallet_summaries` — cached analytics snapshot per wallet
 
