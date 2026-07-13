@@ -444,7 +444,7 @@ _meta_cache = {"key": None, "expires": 0.0, "payload": None}
 # of that wallet's trade rows plus the collections table (get_trades JOINs
 # collections for name/total_fee_bps, and fee bps feeds PnL math).
 # TOTAL(gas_eth) catches --gas backfill UPDATEs; sell_type backfill UPDATEs are
-# NOT caught (cosmetic only — /api/sell_graph bypasses this cache and stays fresh).
+# NOT caught (cosmetic only).
 # Memory: ~23 wallets x full matched-trade/open-position dicts is tens of MB —
 # fine for a local single-user tool.
 _wallet_cache = {}  # wallet -> {"fp": (...), "result": analytics_dict}
@@ -1001,122 +1001,6 @@ def api_collection_pnl_buckets(address):
     synced_at = min((s["last_synced_at"] for s in sync_times if s and s["last_synced_at"]), default=None)
     return jsonify({"buckets": buckets, "bucket_type": "daily", "total_pnl_eth": total_pnl,
                     "synced_at": synced_at})
-
-
-# ── API: collections list (for graph picker) ───────────────────────────────────
-
-@app.route("/api/collections")
-def api_collections():
-    db.init_db()
-    with db.get_conn() as conn:
-        rows = conn.execute("""
-            SELECT c.contract_address, c.slug, c.name,
-                   COUNT(t.id) AS trade_count
-            FROM collections c
-            JOIN trades t ON t.collection_address = c.contract_address
-            GROUP BY c.contract_address
-            ORDER BY trade_count DESC, c.name
-        """).fetchall()
-    return jsonify([dict(r) for r in rows])
-
-
-# ── API: sell graph data (matched round-trips per collection) ──────────────────
-
-@app.route("/api/sell_graph")
-def api_sell_graph():
-    slugs = [s.strip() for s in request.args.get("slugs", "").split(",") if s.strip()]
-    addrs = [a.strip().lower() for a in request.args.get("addrs", "").split(",") if a.strip()]
-
-    if not slugs and not addrs:
-        return jsonify({"error": "Provide slugs or addrs param"}), 400
-
-    db.init_db()
-    with db.get_conn() as conn:
-        all_wallets = [r[0] for r in conn.execute(
-            "SELECT DISTINCT wallet_address FROM trades"
-        ).fetchall()]
-
-        # Resolve addr→info and slug→info for all requested collections
-        col_info = {}
-        for slug in slugs:
-            row = conn.execute(
-                "SELECT contract_address, name, slug FROM collections WHERE slug = ?", (slug,)
-            ).fetchone()
-            if row:
-                col_info[row["contract_address"]] = dict(row)
-        for addr in addrs:
-            row = conn.execute(
-                "SELECT contract_address, name, slug FROM collections WHERE contract_address = ?", (addr,)
-            ).fetchone()
-            if row:
-                col_info[addr] = dict(row)
-            elif addr not in col_info:
-                col_info[addr] = {"contract_address": addr, "name": addr[:10] + "...", "slug": ""}
-
-    all_sells = []
-
-    for wallet in all_wallets:
-        with db.get_conn() as conn:
-            if slugs and addrs:
-                sp = ",".join("?" * len(slugs))
-                ap = ",".join("?" * len(addrs))
-                trades = conn.execute(f"""
-                    SELECT t.*, c.name AS collection_name, c.total_fee_bps
-                    FROM trades t LEFT JOIN collections c ON t.collection_address = c.contract_address
-                    WHERE t.wallet_address = ?
-                      AND (t.collection_slug IN ({sp}) OR t.collection_address IN ({ap}))
-                    ORDER BY t.block_timestamp ASC
-                """, [wallet] + slugs + addrs).fetchall()
-            elif slugs:
-                sp = ",".join("?" * len(slugs))
-                trades = conn.execute(f"""
-                    SELECT t.*, c.name AS collection_name, c.total_fee_bps
-                    FROM trades t LEFT JOIN collections c ON t.collection_address = c.contract_address
-                    WHERE t.wallet_address = ? AND t.collection_slug IN ({sp})
-                    ORDER BY t.block_timestamp ASC
-                """, [wallet] + slugs).fetchall()
-            else:
-                ap = ",".join("?" * len(addrs))
-                trades = conn.execute(f"""
-                    SELECT t.*, c.name AS collection_name, c.total_fee_bps
-                    FROM trades t LEFT JOIN collections c ON t.collection_address = c.contract_address
-                    WHERE t.wallet_address = ? AND t.collection_address IN ({ap})
-                    ORDER BY t.block_timestamp ASC
-                """, [wallet] + addrs).fetchall()
-
-        if not trades:
-            continue
-
-        result = analytics.compute_analytics(trades)
-        for m in result.get("matched_trades", []):
-            col_addr = m["collection_address"]
-            info = col_info.get(col_addr, {})
-            buy_eth = m["buy_eth"]
-            sell_eth = m["sell_eth"]
-            roi_pct = (sell_eth / buy_eth - 1) * 100 if buy_eth else 0
-            all_sells.append({
-                "ts": m["sell_ts"],
-                "buy_eth": round(buy_eth, 4),
-                "sell_eth": round(sell_eth, 4),
-                "roi_pct": round(roi_pct, 2),
-                "pnl_eth": round(m["pnl_eth"], 4),
-                "sell_type": m.get("sell_type"),
-                "collection_addr": col_addr,
-                "collection_slug": info.get("slug") or m.get("collection_slug", ""),
-                "collection_name": info.get("name") or m.get("collection_name", col_addr[:10]),
-                "nft_id": m["nft_id"],
-                "wallet": wallet,
-            })
-
-    all_sells.sort(key=lambda x: x["ts"])
-
-    return jsonify({
-        "sells": all_sells,
-        "collections": [
-            {"addr": addr, "slug": info.get("slug", ""), "name": info.get("name", addr[:10])}
-            for addr, info in col_info.items()
-        ],
-    })
 
 
 # ── API: Dune top traders ─────────────────────────────────────────────────────

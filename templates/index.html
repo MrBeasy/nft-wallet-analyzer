@@ -249,9 +249,7 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
 .mf-range{display:flex;gap:4px}
 .mf-range .mf-inp{min-width:0;flex:1}
 
-/* ── Graph view ── */
-.graph-picker-wrap{display:flex;flex-direction:column;gap:10px;margin-bottom:14px}
-.graph-search-wrap{position:relative;max-width:420px}
+/* ── Shared dropdown / chart container / tooltip ── */
 .graph-dropdown{position:absolute;top:calc(100% + 4px);left:0;right:0;
   background:var(--surface);border:1px solid var(--border);border-radius:var(--r);
   z-index:100;box-shadow:0 4px 20px rgba(0,0,0,.4);max-height:260px;overflow-y:auto}
@@ -266,29 +264,12 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
 .mkt-add-item.sel{border-color:var(--blue);background:rgba(88,166,255,.08)}
 .mkt-trades-lnk{color:var(--blue);text-decoration:underline;cursor:pointer}
 .mkt-trades-lnk:hover{color:var(--text)}
-.graph-dd-ct{font-size:11px;color:var(--subtle);white-space:nowrap}
-.graph-pills{display:flex;flex-wrap:wrap;gap:8px;min-height:24px}
-.graph-pill{display:inline-flex;align-items:center;gap:6px;padding:4px 10px 4px 8px;
-  border:1px solid;border-radius:14px;font-size:12px;font-weight:500;
-  background:rgba(0,0,0,.2)}
-.graph-pill-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
-.graph-pill-x{background:none;border:none;cursor:pointer;padding:0 2px 0 4px;
-  opacity:.5;transition:opacity .15s;font-size:13px;color:inherit;line-height:1}
-.graph-pill-x:hover{opacity:1}
 .graph-chart-container{position:relative;background:var(--surface);
   border:1px solid var(--border);border-radius:var(--r);overflow:hidden;margin-bottom:12px}
-#graph-chart-wrap{min-height:390px;display:flex;align-items:stretch}
-#graph-chart-wrap svg{display:block}
 .graph-tooltip{position:absolute;background:var(--surface2);border:1px solid var(--border);
   border-radius:var(--r);padding:10px 14px;font-size:12px;pointer-events:none;
   z-index:50;min-width:190px;line-height:1.6;box-shadow:0 4px 20px rgba(0,0,0,.5);
   white-space:nowrap}
-.graph-legend{display:flex;flex-wrap:wrap;gap:14px;font-size:12px;
-  color:var(--muted);padding:2px 0 4px;align-items:center}
-.graph-legend-shapes{display:flex;gap:14px;margin-right:6px;
-  padding-right:14px;border-right:1px solid var(--border)}
-.legend-item{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
-.legend-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
 /* ── PnL chart date-range brush ── */
 .pnl-brush-row{display:flex;align-items:center;gap:10px;margin-top:10px;padding:0 4px}
 .pnl-date-inp{background:var(--surface);border:1px solid var(--border);border-radius:6px;
@@ -313,7 +294,6 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
 .graph-page-hdr{margin-bottom:20px}
 .graph-page-hdr h1{font-size:22px;font-weight:700;letter-spacing:-.4px;margin-bottom:4px}
 .graph-page-hdr p{font-size:13px;color:var(--muted)}
-.graph-hint{font-size:12px;color:var(--subtle);padding:6px 2px}
 
 /* ── Benchmark view ── */
 .wallet-chip{display:inline-flex;align-items:center;padding:4px 12px;
@@ -348,10 +328,9 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
       <button class="nav-btn active" id="nav-market" onclick="navigate('/')">Market</button>
       <button class="nav-btn" id="nav-wallets" onclick="navigate('/wallets')">Wallets</button>
       <button class="nav-btn" id="nav-meta" onclick="navigate('/meta')">Collections</button>
-      <button class="nav-btn" id="nav-graph" onclick="navigate('/graph')">Graph</button>
+      <button class="nav-btn" id="nav-coltrades" onclick="navigate('/coltrades')">Dump/Listing Buy Ratio</button>
       <button class="nav-btn" id="nav-traders" onclick="navigate('/traders')">OS Traders</button>
       <button class="nav-btn" id="nav-benchmark" onclick="navigate('/benchmark')">Benchmark</button>
-      <button class="nav-btn" id="nav-coltrades" onclick="navigate('/coltrades')">Col Trading</button>
     </nav>
   </div>
   <div>
@@ -540,47 +519,6 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
   </div>
 </main>
 
-<!-- ── Graph view ── -->
-<main id="view-graph" style="display:none">
-  <div class="graph-page-hdr">
-    <h1>Sell Graph</h1>
-    <p>Lifetime sell history by collection — ROI % per trade, listing vs bid dump</p>
-  </div>
-
-  <div class="graph-picker-wrap">
-    <div class="graph-search-wrap">
-      <input id="graph-search" class="finp" placeholder="Search collections to add…"
-        oninput="graphSearchInput()" onfocus="graphSearchInput()"
-        onkeydown="graphSearchKey(event)" autocomplete="off">
-      <div id="graph-dropdown" class="graph-dropdown hidden"></div>
-    </div>
-    <div id="graph-pills" class="graph-pills"></div>
-    <div class="graph-hint" id="graph-hint">Add a collection above to start. Sell type (Listing / Bid) populates on re-sync.</div>
-  </div>
-
-  <div class="d-filter-bar" style="margin-bottom:12px">
-    <div class="filter-btns">
-      <button class="fbtn active" data-st="all"     onclick="setGraphFilter('all')">All</button>
-      <button class="fbtn"        data-st="listing"  onclick="setGraphFilter('listing')">Listing</button>
-      <button class="fbtn"        data-st="bid"      onclick="setGraphFilter('bid')">Bid Dump</button>
-      <button class="fbtn"        data-st="unknown"  onclick="setGraphFilter('unknown')">Unknown</button>
-    </div>
-  </div>
-
-  <div class="graph-chart-container">
-    <div id="graph-chart-wrap">
-      <div class="empty" style="min-height:390px">
-        <div class="empty-icon">◈</div>
-        <p style="font-size:15px;font-weight:600">Add a collection to start</p>
-        <p style="font-size:13px">Search above and select a collection</p>
-      </div>
-    </div>
-    <div id="graph-tooltip" class="graph-tooltip hidden"></div>
-  </div>
-
-  <div id="graph-legend" class="graph-legend"></div>
-</main>
-
 <!-- ── OS Top Traders (Dune) view ── -->
 <main id="view-dune" style="display:none">
   <div class="meta-page-hdr">
@@ -611,7 +549,7 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
 <!-- ── Col Trading view ── -->
 <main id="view-coltrades" style="display:none">
   <div class="graph-page-hdr" style="margin-bottom:16px">
-    <h1>Col Trading</h1>
+    <h1>Dump/Listing Buy Ratio</h1>
     <p>Bid/listing ratio and avg sale price per collection — rolling window</p>
   </div>
 
@@ -987,8 +925,6 @@ function router() {
     loadCollection(h.slice(13));
   } else if (h === '#/meta') {
     loadMeta();
-  } else if (h === '#/graph') {
-    loadGraph();
   } else if (h === '#/traders') {
     loadDune();
   } else if (h === '#/benchmark') {
@@ -1005,7 +941,6 @@ function router() {
 function setNavActive(view) {
   document.getElementById('nav-wallets').classList.toggle('active', view === 'wallets');
   document.getElementById('nav-meta').classList.toggle('active', view === 'meta');
-  document.getElementById('nav-graph').classList.toggle('active', view === 'graph');
   document.getElementById('nav-traders').classList.toggle('active', view === 'traders');
   document.getElementById('nav-benchmark').classList.toggle('active', view === 'benchmark');
   document.getElementById('nav-market').classList.toggle('active', view === 'market');
@@ -1026,7 +961,6 @@ async function loadHome() {
   document.getElementById('view-home').style.display = '';
   document.getElementById('view-detail').style.display = 'none';
   document.getElementById('view-meta').style.display = 'none';
-  document.getElementById('view-graph').style.display = 'none';
   document.getElementById('view-dune').style.display = 'none';
   document.getElementById('view-collection').style.display = 'none';
   document.getElementById('view-benchmark').style.display = 'none';
@@ -1244,7 +1178,6 @@ async function loadDetail(address) {
   document.getElementById('view-home').style.display = 'none';
   document.getElementById('view-detail').style.display = '';
   document.getElementById('view-meta').style.display = 'none';
-  document.getElementById('view-graph').style.display = 'none';
   document.getElementById('view-dune').style.display = 'none';
   document.getElementById('view-collection').style.display = 'none';
   document.getElementById('view-benchmark').style.display = 'none';
@@ -2287,7 +2220,6 @@ async function loadMeta() {
   document.getElementById('view-home').style.display = 'none';
   document.getElementById('view-detail').style.display = 'none';
   document.getElementById('view-meta').style.display = '';
-  document.getElementById('view-graph').style.display = 'none';
   document.getElementById('view-dune').style.display = 'none';
   document.getElementById('view-collection').style.display = 'none';
   document.getElementById('view-benchmark').style.display = 'none';
@@ -2433,7 +2365,6 @@ async function loadCollection(addr) {  // eslint-disable-line no-unused-vars
   document.getElementById('view-home').style.display = 'none';
   document.getElementById('view-detail').style.display = 'none';
   document.getElementById('view-meta').style.display = 'none';
-  document.getElementById('view-graph').style.display = 'none';
   document.getElementById('view-dune').style.display = 'none';
   document.getElementById('view-collection').style.display = '';
   document.getElementById('view-benchmark').style.display = 'none';
@@ -2889,350 +2820,6 @@ function toggleMktTimeRel(tId, on) {
   refreshTable(tId);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Graph view
-// ─────────────────────────────────────────────────────────────────────────────
-
-const GRAPH_PALETTE = [
-  '#58a6ff','#3fb950','#f85149','#d29922',
-  '#bc8cff','#ff7b72','#79c0ff','#56d364',
-  '#ffa657','#e3b341',
-];
-
-let graphCollections = [];   // [{addr, slug, name, color}]
-let graphData = null;        // API response: {sells, collections}
-let graphFilter = 'all';     // 'all'|'listing'|'bid'|'unknown'
-let graphAllCols = null;     // all known collections for search
-let graphDDIdx = -1;         // keyboard nav index in dropdown
-
-async function loadGraph() {
-  document.getElementById('view-home').style.display   = 'none';
-  document.getElementById('view-detail').style.display = 'none';
-  document.getElementById('view-meta').style.display   = 'none';
-  document.getElementById('view-graph').style.display  = '';
-  document.getElementById('view-dune').style.display   = 'none';
-  document.getElementById('view-collection').style.display = 'none';
-  document.getElementById('view-benchmark').style.display = 'none';
-  document.getElementById('view-market').style.display = 'none';
-  document.getElementById('view-coltrades').style.display = 'none';
-  setNavActive('graph');
-
-  if (!graphAllCols) {
-    try {
-      graphAllCols = await fetch('/api/collections').then(r => r.json());
-    } catch { graphAllCols = []; }
-  }
-}
-
-// ── Collection search dropdown ─────────────────────────────────────────────
-
-function graphSearchInput() {
-  const q = document.getElementById('graph-search').value.trim().toLowerCase();
-  const dd = document.getElementById('graph-dropdown');
-  graphDDIdx = -1;
-  if (!q || !graphAllCols) { dd.classList.add('hidden'); return; }
-
-  const added = new Set(graphCollections.map(c => c.addr));
-  const matches = graphAllCols
-    .filter(c => !added.has(c.contract_address) &&
-                 ((c.name || '').toLowerCase().includes(q) ||
-                  (c.slug || '').toLowerCase().includes(q)))
-    .slice(0, 8);
-
-  if (!matches.length) { dd.classList.add('hidden'); return; }
-
-  dd.innerHTML = matches.map((c, i) =>
-    `<div class="graph-dd-item" data-i="${i}"
-       onmousedown="addGraphCollection('${esc(c.contract_address)}','${esc(c.slug)}','${esc(c.name)}')">
-      <span>${esc(c.name)}</span>
-      <span class="graph-dd-slug">${esc(c.slug)}</span>
-      <span class="graph-dd-ct">${c.trade_count} trades</span>
-    </div>`
-  ).join('');
-  dd.classList.remove('hidden');
-}
-
-function graphSearchKey(e) {
-  const dd = document.getElementById('graph-dropdown');
-  if (dd.classList.contains('hidden')) return;
-  const items = dd.querySelectorAll('.graph-dd-item');
-  if (e.key === 'ArrowDown') {
-    graphDDIdx = Math.min(graphDDIdx + 1, items.length - 1);
-    items.forEach((el, i) => el.classList.toggle('active', i === graphDDIdx));
-    e.preventDefault();
-  } else if (e.key === 'ArrowUp') {
-    graphDDIdx = Math.max(graphDDIdx - 1, 0);
-    items.forEach((el, i) => el.classList.toggle('active', i === graphDDIdx));
-    e.preventDefault();
-  } else if (e.key === 'Enter' && graphDDIdx >= 0) {
-    items[graphDDIdx].dispatchEvent(new MouseEvent('mousedown'));
-    e.preventDefault();
-  } else if (e.key === 'Escape') {
-    dd.classList.add('hidden');
-  }
-}
-
-document.addEventListener('click', e => {
-  if (!document.getElementById('graph-search')?.contains(e.target)) {
-    document.getElementById('graph-dropdown')?.classList.add('hidden');
-  }
-});
-
-function addGraphCollection(addr, slug, name) {
-  if (graphCollections.find(c => c.addr === addr)) return;
-  const color = GRAPH_PALETTE[graphCollections.length % GRAPH_PALETTE.length];
-  graphCollections.push({ addr, slug, name, color });
-  document.getElementById('graph-search').value = '';
-  document.getElementById('graph-dropdown').classList.add('hidden');
-  document.getElementById('graph-hint').style.display = 'none';
-  renderGraphPills();
-  loadGraphData();
-}
-
-function removeGraphCollection(addr) {
-  graphCollections = graphCollections.filter(c => c.addr !== addr);
-  graphCollections.forEach((c, i) => { c.color = GRAPH_PALETTE[i % GRAPH_PALETTE.length]; });
-  renderGraphPills();
-  if (!graphCollections.length) {
-    graphData = null;
-    document.getElementById('graph-chart-wrap').innerHTML =
-      '<div class="empty" style="min-height:390px"><div class="empty-icon">◈</div>' +
-      '<p style="font-size:15px;font-weight:600">Add a collection to start</p>' +
-      '<p style="font-size:13px">Search above and select a collection</p></div>';
-    document.getElementById('graph-legend').innerHTML = '';
-    document.getElementById('graph-hint').style.display = '';
-    return;
-  }
-  renderGraph();
-}
-
-function renderGraphPills() {
-  document.getElementById('graph-pills').innerHTML = graphCollections.map(c =>
-    `<div class="graph-pill" style="border-color:${c.color};color:${c.color}">
-      <span class="graph-pill-dot" style="background:${c.color}"></span>
-      ${esc(c.name)}
-      <button class="graph-pill-x" onclick="removeGraphCollection('${esc(c.addr)}')">✕</button>
-    </div>`
-  ).join('');
-}
-
-// ── Data loading ───────────────────────────────────────────────────────────
-
-async function loadGraphData() {
-  if (!graphCollections.length) return;
-  const addrs = graphCollections.map(c => c.addr).join(',');
-  const wrap = document.getElementById('graph-chart-wrap');
-  wrap.innerHTML = '<div class="loader" style="min-height:390px"><div class="spinner"></div></div>';
-
-  try {
-    graphData = await fetch(`/api/sell_graph?addrs=${encodeURIComponent(addrs)}`).then(r => r.json());
-    renderGraph();
-  } catch {
-    wrap.innerHTML = '<div class="no-data">Failed to load sell data.</div>';
-  }
-}
-
-function setGraphFilter(f) {
-  graphFilter = f;
-  document.querySelectorAll('[data-st]').forEach(b =>
-    b.classList.toggle('active', b.dataset.st === f));
-  renderGraph();
-}
-
-// ── Chart rendering ────────────────────────────────────────────────────────
-
-function renderGraph() {
-  const wrap = document.getElementById('graph-chart-wrap');
-  if (!graphData || !graphData.sells) { return; }
-
-  const colMap = {};
-  for (const c of graphCollections) colMap[c.addr] = c;
-
-  const sells = graphData.sells.filter(s => {
-    if (!colMap[s.collection_addr]) return false;
-    if (graphFilter === 'all') return true;
-    if (graphFilter === 'unknown') return s.sell_type == null;
-    return s.sell_type === graphFilter;
-  });
-
-  if (!sells.length) {
-    const hint = graphFilter !== 'all'
-      ? `No "${graphFilter === 'bid' ? 'Bid Dump' : graphFilter}" sells in this data.`
-        + (graphFilter !== 'unknown' ? ' Re-sync to populate sell types.' : '')
-      : 'No matched sells for selected collections.';
-    wrap.innerHTML = `<div class="no-data" style="min-height:390px">${hint}</div>`;
-    renderGraphLegend(colMap);
-    return;
-  }
-
-  const W = Math.max((wrap.clientWidth || 800) - 2, 400);
-  const H = 390;
-  const ml = 64, mr = 28, mt = 20, mb = 52;
-  const cw = W - ml - mr;
-  const ch = H - mt - mb;
-
-  const minTs  = Math.min(...sells.map(s => s.ts));
-  const maxTs  = Math.max(...sells.map(s => s.ts));
-  const minRoi = Math.min(...sells.map(s => s.roi_pct));
-  const maxRoi = Math.max(...sells.map(s => s.roi_pct));
-  const yPad   = Math.max((maxRoi - minRoi) * 0.12, 5);
-  const yMin   = minRoi - yPad;
-  const yMax   = maxRoi + yPad;
-
-  const xS = ts  => maxTs === minTs ? cw / 2 : (ts  - minTs)  / (maxTs  - minTs)  * cw;
-  const yS = roi => (1 - (roi - yMin) / (yMax - yMin)) * ch;
-
-  const yTicks = niceAxisTicks(yMin, yMax, 7);
-  const xTicks = niceDateTicks(minTs, maxTs, Math.min(8, Math.ceil(cw / 90)));
-
-  // Build SVG string
-  let s = `<svg width="${W}" height="${H}" id="graph-svg" style="display:block">
-  <defs><clipPath id="chart-clip"><rect x="0" y="0" width="${cw}" height="${ch}"/></clipPath></defs>
-  <g transform="translate(${ml},${mt})">`;
-
-  // Y grid + labels
-  for (const tick of yTicks) {
-    const y = yS(tick).toFixed(1);
-    const isZero = tick === 0;
-    s += `<line x1="0" y1="${y}" x2="${cw}" y2="${y}"
-      stroke="${isZero ? '#484f58' : '#21262d'}" stroke-width="${isZero ? 1.5 : 1}"/>`;
-    s += `<text x="-8" y="${(parseFloat(y) + 4).toFixed(1)}" text-anchor="end"
-      font-size="11" fill="#7d8590" font-family="'SF Mono','Cascadia Code',monospace">${tick >= 0 ? '+' : ''}${tick.toFixed(0)}%</text>`;
-  }
-
-  // Axes
-  s += `<line x1="0" y1="${ch}" x2="${cw}" y2="${ch}" stroke="#30363d" stroke-width="1"/>`;
-  s += `<line x1="0" y1="0" x2="0" y2="${ch}" stroke="#30363d" stroke-width="1"/>`;
-
-  // X ticks + labels
-  for (const ts of xTicks) {
-    const x = xS(ts).toFixed(1);
-    s += `<line x1="${x}" y1="${ch}" x2="${x}" y2="${(ch + 5).toFixed(1)}" stroke="#30363d" stroke-width="1"/>`;
-    s += `<text x="${x}" y="${(ch + 20).toFixed(1)}" text-anchor="middle"
-      font-size="11" fill="#7d8590" font-family="sans-serif">${fmtAxisDate(ts)}</text>`;
-  }
-
-  // Y-axis label
-  s += `<text transform="rotate(-90)" x="${-(ch/2).toFixed(0)}" y="-50"
-    text-anchor="middle" font-size="11" fill="#7d8590" font-family="sans-serif">ROI %</text>`;
-
-  // Data points
-  s += `<g clip-path="url(#chart-clip)">`;
-  sells.forEach((pt, i) => {
-    const px = xS(pt.ts).toFixed(1);
-    const py = yS(pt.roi_pct).toFixed(1);
-    const c  = colMap[pt.collection_addr];
-    const color = c ? c.color : '#484f58';
-    const st = pt.sell_type;
-
-    let shape;
-    if (st === 'listing') {
-      shape = `<circle r="5" fill="${color}" fill-opacity="0.82" stroke="${color}" stroke-width="0.5"/>`;
-    } else if (st === 'bid') {
-      shape = `<polygon points="0,-6 6,0 0,6 -6,0" fill="${color}" fill-opacity="0.82" stroke="${color}" stroke-width="0.5"/>`;
-    } else {
-      shape = `<circle r="4" fill="#484f58" fill-opacity="0.75" stroke="#7d8590" stroke-width="0.5"/>`;
-    }
-    s += `<g transform="translate(${px},${py})" class="graph-pt" data-i="${i}" style="cursor:pointer">${shape}</g>`;
-  });
-  s += `</g>`;
-
-  // Sell count annotation
-  s += `<text x="${cw}" y="-4" text-anchor="end" font-size="11" fill="#7d8590"
-    font-family="sans-serif">${sells.length} sell${sells.length !== 1 ? 's' : ''}</text>`;
-
-  s += `</g></svg>`;
-  wrap.innerHTML = s;
-
-  setupGraphTooltip(wrap, sells, colMap);
-  renderGraphLegend(colMap);
-}
-
-// ── Tooltip ────────────────────────────────────────────────────────────────
-
-function setupGraphTooltip(wrap, sells, colMap) {
-  const svg     = document.getElementById('graph-svg');
-  const tooltip = document.getElementById('graph-tooltip');
-  if (!svg || !tooltip) return;
-
-  // Pre-compute pixel coords from SVG transform attributes
-  const pts = svg.querySelectorAll('.graph-pt');
-  const coords = Array.from(pts).map(g => {
-    const tf = g.getAttribute('transform') || '';
-    const m  = tf.match(/translate\(([^,]+),([^)]+)\)/);
-    return m ? { x: parseFloat(m[1]), y: parseFloat(m[2]) } : { x: 0, y: 0 };
-  });
-
-  const ml = 64, mt = 20;
-
-  svg.addEventListener('pointermove', e => {
-    const rect = svg.getBoundingClientRect();
-    const mx   = e.clientX - rect.left - ml;
-    const my   = e.clientY - rect.top  - mt;
-
-    let nearest = null, nearestDist = 25;  // px threshold
-    coords.forEach((p, i) => {
-      const d = Math.hypot(p.x - mx, p.y - my);
-      if (d < nearestDist) { nearestDist = d; nearest = i; }
-    });
-
-    if (nearest == null) { tooltip.classList.add('hidden'); return; }
-
-    const pt  = sells[nearest];
-    const c   = colMap[pt.collection_addr];
-    const roi = (pt.roi_pct >= 0 ? '+' : '') + pt.roi_pct.toFixed(1) + '%';
-    const roiColor = pt.roi_pct >= 0 ? 'var(--green)' : 'var(--red)';
-    const stLabel  = pt.sell_type === 'listing' ? 'Listing' :
-                     pt.sell_type === 'bid'     ? 'Bid Dump' : 'Unknown';
-    const date = new Date(pt.ts * 1000).toLocaleDateString('en-US',
-      { month: 'short', day: 'numeric', year: 'numeric' });
-
-    tooltip.innerHTML =
-      `<div style="color:${c ? c.color : '#7d8590'};font-weight:700;margin-bottom:3px">${esc(c ? c.name : pt.collection_addr.slice(0,12))}</div>` +
-      `<div style="color:var(--muted)">NFT #${esc(pt.nft_id)} &nbsp;·&nbsp; ${date}</div>` +
-      `<div style="color:var(--muted);margin-top:2px">${stLabel}</div>` +
-      `<div style="margin-top:6px;font-family:var(--mono)">` +
-        `Buy: ${pt.buy_eth} ETH &rarr; Sell: ${pt.sell_eth} ETH` +
-      `</div>` +
-      `<div style="color:${roiColor};font-size:18px;font-weight:800;font-family:var(--mono);margin-top:4px">${roi}</div>` +
-      `<div style="color:var(--muted);font-family:var(--mono)">${fmtPnl(pt.pnl_eth)}</div>`;
-
-    tooltip.classList.remove('hidden');
-
-    const cx = e.clientX - rect.left + 14;
-    const cy = e.clientY - rect.top  - 14;
-    const tw = tooltip.offsetWidth + 16;
-    const th = tooltip.offsetHeight + 16;
-    const ww = wrap.clientWidth;
-    const wh = wrap.clientHeight;
-    tooltip.style.left = (cx + tw > ww ? cx - tw - 2 : cx) + 'px';
-    tooltip.style.top  = (cy + th > wh ? cy - th + 16 : cy) + 'px';
-  });
-
-  svg.addEventListener('pointerleave', () => tooltip.classList.add('hidden'));
-}
-
-// ── Legend ─────────────────────────────────────────────────────────────────
-
-function renderGraphLegend(colMap) {
-  const cols = Object.values(colMap);
-  const legend = document.getElementById('graph-legend');
-  legend.innerHTML =
-    `<div class="graph-legend-shapes">` +
-      `<span class="legend-item"><svg width="12" height="12" style="margin-right:1px">` +
-        `<circle cx="6" cy="6" r="5" fill="#7d8590" fill-opacity="0.8"/></svg>Listing</span>` +
-      `<span class="legend-item"><svg width="12" height="12" style="margin-right:1px">` +
-        `<polygon points="6,0 12,6 6,12 0,6" fill="#7d8590" fill-opacity="0.8"/></svg>Bid Dump</span>` +
-      `<span class="legend-item"><svg width="12" height="12" style="margin-right:1px">` +
-        `<circle cx="6" cy="6" r="4" fill="#484f58" fill-opacity="0.75" stroke="#7d8590" stroke-width="0.5"/></svg>Unknown</span>` +
-    `</div>` +
-    cols.map(c =>
-      `<span class="legend-item">` +
-        `<span class="legend-dot" style="background:${c.color}"></span>${esc(c.name)}` +
-      `</span>`
-    ).join('');
-}
-
 // ── Axis tick helpers ──────────────────────────────────────────────────────
 
 function niceAxisTicks(min, max, targetCount) {
@@ -3250,17 +2837,6 @@ function niceAxisTicks(min, max, targetCount) {
   if (min < 0 && max > 0 && !ticks.includes(0)) ticks.push(0);
   return ticks.sort((a, b) => a - b);
 }
-
-function niceDateTicks(minTs, maxTs, count) {
-  if (minTs === maxTs) return [minTs];
-  const step = (maxTs - minTs) / Math.max(count - 1, 1);
-  return Array.from({ length: count }, (_, i) => Math.round(minTs + step * i));
-}
-
-function fmtAxisDate(ts) {
-  return new Date(ts * 1000).toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // OS Top Traders (Dune) view
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3271,7 +2847,6 @@ async function loadDune() {
   document.getElementById('view-home').style.display   = 'none';
   document.getElementById('view-detail').style.display = 'none';
   document.getElementById('view-meta').style.display   = 'none';
-  document.getElementById('view-graph').style.display  = 'none';
   document.getElementById('view-dune').style.display   = '';
   document.getElementById('view-collection').style.display = 'none';
   document.getElementById('view-benchmark').style.display = 'none';
@@ -3400,7 +2975,6 @@ async function loadBenchmark() {
   document.getElementById('view-home').style.display = 'none';
   document.getElementById('view-detail').style.display = 'none';
   document.getElementById('view-meta').style.display = 'none';
-  document.getElementById('view-graph').style.display = 'none';
   document.getElementById('view-dune').style.display = 'none';
   document.getElementById('view-collection').style.display = 'none';
   document.getElementById('view-benchmark').style.display = '';
@@ -3902,7 +3476,7 @@ let marketRows = [];
 let marketSyncRunning = false;
 
 async function loadMarket() {
-  ['view-home','view-detail','view-meta','view-graph','view-dune',
+  ['view-home','view-detail','view-meta','view-dune',
    'view-collection','view-benchmark','view-coltrades'].forEach(id =>
     document.getElementById(id).style.display = 'none');
   document.getElementById('view-market').style.display = '';
@@ -4217,7 +3791,7 @@ function ctCssVar(name) {
 }
 
 async function loadColTrades() {
-  ['view-home','view-detail','view-meta','view-graph','view-dune',
+  ['view-home','view-detail','view-meta','view-dune',
    'view-collection','view-benchmark','view-market'].forEach(
     id => document.getElementById(id).style.display = 'none'
   );
