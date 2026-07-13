@@ -643,19 +643,27 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
   <div class="meta-filters" style="align-items:flex-end">
     <div class="mf-group" style="flex:1;min-width:240px">
       <label class="mf-lbl">Wallet Address</label>
-      <input id="bm-addr" class="mf-inp finp-mono" type="text" placeholder="0x..." autocomplete="off"
-        onkeydown="if(event.key==='Enter')runBenchmark()">
+      <div style="position:relative">
+        <input id="bm-addr" class="mf-inp finp-mono" type="text" placeholder="0x..." autocomplete="off"
+          oninput="bmAcInput('bm-addr')" onfocus="bmAcInput('bm-addr')"
+          onkeydown="bmAcKey(event,'bm-addr')">
+        <div id="bm-addr-dd" class="graph-dropdown hidden"></div>
+      </div>
     </div>
     <div class="mf-group" style="flex:1;min-width:240px">
       <label class="mf-lbl">1v1 Opponent (optional)</label>
-      <input id="bm-vs" class="mf-inp finp-mono" type="text" placeholder="0x... — empty = vs everyone" autocomplete="off"
-        onkeydown="if(event.key==='Enter')runBenchmark()">
+      <div style="position:relative">
+        <input id="bm-vs" class="mf-inp finp-mono" type="text" placeholder="0x... — empty = vs everyone" autocomplete="off"
+          oninput="bmAcInput('bm-vs')" onfocus="bmAcInput('bm-vs')"
+          onkeydown="bmAcKey(event,'bm-vs')">
+        <div id="bm-vs-dd" class="graph-dropdown hidden"></div>
+      </div>
     </div>
     <div class="mf-group">
       <label class="mf-lbl">Timeframe</label>
       <div class="filter-btns">
-        <button class="fbtn active" data-bm-days="0"   onclick="setBenchmarkDays(0)">All Time</button>
-        <button class="fbtn"        data-bm-days="30"  onclick="setBenchmarkDays(30)">30d</button>
+        <button class="fbtn"        data-bm-days="0"   onclick="setBenchmarkDays(0)">All Time</button>
+        <button class="fbtn active" data-bm-days="30"  onclick="setBenchmarkDays(30)">30d</button>
         <button class="fbtn"        data-bm-days="90"  onclick="setBenchmarkDays(90)">90d</button>
         <button class="fbtn"        data-bm-days="365" onclick="setBenchmarkDays(365)">1y</button>
       </div>
@@ -867,7 +875,7 @@ let walletDateUntil = '';
 // sortable table registry: tableId → { rows, sortCol, sortDir, renderRow }
 const tbls = {};
 
-let benchmarkDays = 0;
+let benchmarkDays = 30;
 let benchmarkCache = null;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3309,7 +3317,14 @@ async function loadBenchmark() {
       walletCache = await fetch('/api/wallets').then(r => r.json());
     }
     if (walletCache && walletCache.length) {
-      chipsEl.innerHTML = walletCache.map(w => {
+      // Named wallets alphabetically, then unnamed by address
+      const sorted = [...walletCache].sort((a, b) => {
+        const an = (a.name || '').toLowerCase(), bn = (b.name || '').toLowerCase();
+        if (an && bn) return an.localeCompare(bn);
+        if (an !== bn) return an ? -1 : 1;
+        return (a.address || '').localeCompare(b.address || '');
+      });
+      chipsEl.innerHTML = sorted.map(w => {
         const short = w.address.slice(0, 6) + '…' + w.address.slice(-4);
         return `<button class="wallet-chip" onclick="fillBenchmarkAddr('${esc(w.address)}')" title="${esc(w.address)}">${esc(w.name || short)}</button>`;
       }).join('');
@@ -3328,6 +3343,14 @@ function setBenchmarkDays(d) {
   benchmarkDays = d;
   document.querySelectorAll('[data-bm-days]').forEach(b =>
     b.classList.toggle('active', parseInt(b.dataset.bmDays) === d));
+  // Re-run the current comparison with the new timeframe
+  const addr = document.getElementById('bm-addr').value.trim();
+  if (!/^0x[0-9a-fA-F]{40}$/.test(addr)) return;
+  if (benchmarkCache && benchmarkCache.collection_filter) {
+    runBenchmarkForCollection(benchmarkCache.collection_filter);
+  } else {
+    runBenchmark();
+  }
 }
 
 // Chips fill the wallet field first; a second click sets the 1v1 opponent
@@ -3340,6 +3363,74 @@ function fillBenchmarkAddr(addr) {
     vsEl.value = addr;
   }
 }
+
+// ── Wallet autocomplete on the address fields ──
+let bmAcIdx = -1;
+
+function bmAcInput(inpId) {
+  const inp = document.getElementById(inpId);
+  const dd = document.getElementById(inpId + '-dd');
+  const q = inp.value.trim().toLowerCase();
+  bmAcIdx = -1;
+  if (!q || !walletCache) { dd.classList.add('hidden'); return; }
+
+  const matches = walletCache.filter(w =>
+    (w.name || '').toLowerCase().includes(q) ||
+    (w.address || '').toLowerCase().includes(q)
+  ).slice(0, 8);
+
+  // Nothing to suggest, or the field already holds the only match
+  if (!matches.length ||
+      (matches.length === 1 && matches[0].address.toLowerCase() === q)) {
+    dd.classList.add('hidden'); return;
+  }
+
+  dd.innerHTML = matches.map(w => {
+    const short = w.address.slice(0, 6) + '…' + w.address.slice(-4);
+    return `<div class="graph-dd-item" onmousedown="bmAcPick('${inpId}','${esc(w.address)}')">
+      <span>${esc(w.name || short)}</span>
+      <span class="graph-dd-slug">${esc(short)}</span>
+    </div>`;
+  }).join('');
+  dd.classList.remove('hidden');
+}
+
+function bmAcPick(inpId, addr) {
+  const inp = document.getElementById(inpId);
+  inp.value = addr;
+  inp.classList.remove('err');
+  document.getElementById(inpId + '-dd').classList.add('hidden');
+}
+
+function bmAcKey(e, inpId) {
+  const dd = document.getElementById(inpId + '-dd');
+  if (!dd.classList.contains('hidden')) {
+    const items = dd.querySelectorAll('.graph-dd-item');
+    if (e.key === 'ArrowDown') {
+      bmAcIdx = Math.min(bmAcIdx + 1, items.length - 1);
+      items.forEach((el, i) => el.classList.toggle('active', i === bmAcIdx));
+      e.preventDefault(); return;
+    } else if (e.key === 'ArrowUp') {
+      bmAcIdx = Math.max(bmAcIdx - 1, 0);
+      items.forEach((el, i) => el.classList.toggle('active', i === bmAcIdx));
+      e.preventDefault(); return;
+    } else if (e.key === 'Enter' && bmAcIdx >= 0) {
+      items[bmAcIdx].dispatchEvent(new MouseEvent('mousedown'));
+      e.preventDefault(); return;
+    } else if (e.key === 'Escape') {
+      dd.classList.add('hidden'); return;
+    }
+  }
+  if (e.key === 'Enter') runBenchmark();
+}
+
+document.addEventListener('click', e => {
+  ['bm-addr', 'bm-vs'].forEach(id => {
+    if (!document.getElementById(id)?.contains(e.target)) {
+      document.getElementById(id + '-dd')?.classList.add('hidden');
+    }
+  });
+});
 
 // Returns the validated opponent address, '' for basket mode, or null on invalid input
 function benchmarkVsAddr(mainAddr) {
