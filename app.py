@@ -86,9 +86,7 @@ def api_wallets():
             d = dict(r)
             eid = d.get("entity_id")
 
-            if eid is not None:
-                if eid in seen_entities:
-                    continue
+            if eid is not None and eid not in seen_entities:
                 seen_entities.add(eid)
 
                 e = entity_map.get(eid, {})
@@ -156,17 +154,18 @@ def api_wallets():
                     cluster.update(_wallet_stats_from_matched(matched))
 
                 result.append(cluster)
-            else:
-                d["member_count"] = 1
-                if sell_from is not None or sell_until is not None:
-                    ar = get_cached_analytics(conn, d["address"])
-                    matched = [
-                        m for m in ar.get("matched_trades", [])
-                        if (sell_from  is None or m["sell_ts"] >= sell_from)
-                        and (sell_until is None or m["sell_ts"] <= sell_until)
-                    ]
-                    d.update(_wallet_stats_from_matched(matched))
-                result.append(d)
+
+            # Always emit the individual wallet row (whether or not it's in a cluster)
+            d["member_count"] = 1
+            if sell_from is not None or sell_until is not None:
+                ar = get_cached_analytics(conn, d["address"])
+                matched = [
+                    m for m in ar.get("matched_trades", [])
+                    if (sell_from  is None or m["sell_ts"] >= sell_from)
+                    and (sell_until is None or m["sell_ts"] <= sell_until)
+                ]
+                d.update(_wallet_stats_from_matched(matched))
+            result.append(d)
 
     result.sort(key=lambda x: (
         -(x["realized_pnl_eth"]) if x.get("realized_pnl_eth") is not None else float("inf"),

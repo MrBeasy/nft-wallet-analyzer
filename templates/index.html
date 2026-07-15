@@ -1091,12 +1091,18 @@ function renderWalletTable(wallets) {
 
 function renderWalletRow(row) {
   const [,pnl, roi, wr, trades, cols, open, avgHold, spent, lastTs, w] = row;
-  const isCluster = w.entity_id != null;
-  const addr     = w.address || '';
-  const displayName = w.name || (isCluster ? 'Cluster #' + w.entity_id : addr.slice(0,8)+'...'+addr.slice(-4));
-  const memberBadge = isCluster && w.member_count ? ` <span style="font-size:10px;color:var(--muted);border:1px solid var(--border);border-radius:3px;padding:0 4px">${w.member_count}w</span>` : '';
-  const nameCell = esc(displayName) + memberBadge;
-  const navTarget = isCluster ? `/entity/${w.entity_id}` : `/wallet/${esc(addr)}`;
+  // address===null means this is the aggregate cluster row; otherwise it's an individual wallet
+  const isClusterRow = w.address === null;
+  const addr = w.address || '';
+  const displayName = w.name || (isClusterRow ? 'Cluster #' + w.entity_id : addr.slice(0,8)+'...'+addr.slice(-4));
+  let badge = '';
+  if (isClusterRow && w.member_count) {
+    badge = ` <span style="font-size:10px;color:var(--muted);border:1px solid var(--border);border-radius:3px;padding:0 4px">${w.member_count}w</span>`;
+  } else if (!isClusterRow && w.entity_id != null) {
+    badge = ` <span style="font-size:10px;color:var(--muted);border:1px solid var(--border);border-radius:3px;padding:0 4px" title="Member of cluster">&subset;</span>`;
+  }
+  const nameCell = esc(displayName) + badge;
+  const navTarget = isClusterRow ? `/entity/${w.entity_id}` : `/wallet/${esc(addr)}`;
   const pnlCls   = pnl  > 0 ? 'pos' : pnl  < 0 ? 'neg' : '';
   const roiCls   = roi  > 0 ? 'pos' : roi  < 0 ? 'neg' : '';
   const wrCls    = wr  != null && wr >= 50 ? 'pos' : '';
