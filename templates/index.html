@@ -865,7 +865,9 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
       </div>
       <div class="fg">
         <label class="flbl">Member Wallets</label>
-        <div id="cluster-members" style="max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:4px;padding:6px"></div>
+        <input id="cluster-search" type="text" class="finp" placeholder="Search wallets…" autocomplete="off"
+          oninput="_renderClusterWallets()" style="margin-bottom:4px">
+        <div id="cluster-members" style="max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:4px;padding:6px"></div>
       </div>
       <div id="cluster-err" style="color:var(--red);font-size:12px;display:none;margin-top:4px"></div>
     </div>
@@ -4257,23 +4259,32 @@ function ctRenderSpreadRow(row) {
 // Cluster modal
 // ─────────────────────────────────────────────────────────────────────────────
 
+let _clusterAllWallets = [];   // populated by openClusterModal, read by _renderClusterWallets
+
 async function openClusterModal(entityId) {
   clusterEditId = entityId;
   document.getElementById('cluster-modal-title').textContent = entityId ? 'Edit Cluster' : 'New Cluster';
   document.getElementById('cluster-name').value = '';
   document.getElementById('cluster-notes').value = '';
+  document.getElementById('cluster-search').value = '';
   document.getElementById('cluster-err').style.display = 'none';
   document.getElementById('cluster-dissolve-btn').style.display = entityId ? '' : 'none';
   document.getElementById('cluster-members').innerHTML = '<div style="color:var(--muted);font-size:12px">Loading wallets…</div>';
   document.getElementById('m-cluster').style.display = '';
 
-  let allWallets = [];
   try {
-    allWallets = await fetch('/api/wallets/all').then(r => r.json());
+    _clusterAllWallets = await fetch('/api/wallets/all').then(r => r.json());
   } catch {
     document.getElementById('cluster-members').innerHTML = '<div style="color:var(--red);font-size:12px">Failed to load wallets.</div>';
     return;
   }
+
+  // Sort alphabetically by name then address
+  _clusterAllWallets.sort((a, b) => {
+    const an = (a.name || a.address).toLowerCase();
+    const bn = (b.name || b.address).toLowerCase();
+    return an < bn ? -1 : an > bn ? 1 : 0;
+  });
 
   let currentMembers = new Set();
   if (entityId) {
@@ -4294,21 +4305,47 @@ async function openClusterModal(entityId) {
     }
   }
 
-  const membersDiv = document.getElementById('cluster-members');
-  if (!allWallets.length) {
-    membersDiv.innerHTML = '<div style="color:var(--muted);font-size:12px">No wallets added yet.</div>';
+  // Store checked state on the wallet objects so _renderClusterWallets can read it
+  _clusterAllWallets.forEach(w => { w._checked = currentMembers.has(w.address.toLowerCase()); });
+
+  if (!_clusterAllWallets.length) {
+    document.getElementById('cluster-members').innerHTML = '<div style="color:var(--muted);font-size:12px">No wallets added yet.</div>';
     return;
   }
 
-  membersDiv.innerHTML = allWallets.map(w => {
+  _renderClusterWallets();
+  setTimeout(() => document.getElementById('cluster-search').focus(), 50);
+}
+
+function _renderClusterWallets() {
+  const q = document.getElementById('cluster-search').value.trim().toLowerCase();
+  const entityId = clusterEditId;
+
+  // Snapshot current checked state from DOM before re-rendering
+  document.querySelectorAll('#cluster-members input[type=checkbox]').forEach(cb => {
+    const w = _clusterAllWallets.find(x => x.address.toLowerCase() === cb.value.toLowerCase());
+    if (w) w._checked = cb.checked;
+  });
+
+  const filtered = q
+    ? _clusterAllWallets.filter(w =>
+        (w.name || '').toLowerCase().includes(q) || w.address.toLowerCase().includes(q))
+    : _clusterAllWallets;
+
+  const membersDiv = document.getElementById('cluster-members');
+  if (!filtered.length) {
+    membersDiv.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:4px">No wallets match.</div>';
+    return;
+  }
+
+  membersDiv.innerHTML = filtered.map(w => {
     const inOtherCluster = w.entity_id != null && w.entity_id !== entityId;
-    const checked = currentMembers.has(w.address.toLowerCase());
     const label = esc(w.name || w.address);
     const sub = esc(w.address.slice(0,8) + '…' + w.address.slice(-4));
     const disabledAttr = inOtherCluster ? ' disabled' : '';
     const disabledStyle = inOtherCluster ? ' style="opacity:0.45" title="Already in another cluster"' : '';
     return `<label class="cluster-member-row"${disabledStyle} style="display:flex;align-items:center;gap:8px;padding:4px 0;cursor:${inOtherCluster?'default':'pointer'}">
-      <input type="checkbox" value="${esc(w.address)}"${checked ? ' checked' : ''}${disabledAttr} style="margin:0">
+      <input type="checkbox" value="${esc(w.address)}"${w._checked ? ' checked' : ''}${disabledAttr} style="margin:0">
       <span>
         <span style="font-weight:500">${label}</span>
         <span class="mono" style="font-size:11px;color:var(--muted);margin-left:4px">${sub}</span>
@@ -4321,8 +4358,13 @@ async function openClusterModal(entityId) {
 async function saveCluster() {
   const name = document.getElementById('cluster-name').value.trim();
   const notes = document.getElementById('cluster-notes').value.trim();
-  const checked = [...document.querySelectorAll('#cluster-members input[type=checkbox]:checked')];
-  const members = checked.map(c => c.value.toLowerCase());
+
+  // Sync DOM checkbox state into _clusterAllWallets before reading (handles filtered view)
+  document.querySelectorAll('#cluster-members input[type=checkbox]').forEach(cb => {
+    const w = _clusterAllWallets.find(x => x.address.toLowerCase() === cb.value.toLowerCase());
+    if (w) w._checked = cb.checked;
+  });
+  const members = _clusterAllWallets.filter(w => w._checked).map(w => w.address.toLowerCase());
   const errEl = document.getElementById('cluster-err');
 
   if (!name) { errEl.textContent = 'Cluster name is required.'; errEl.style.display = ''; return; }
