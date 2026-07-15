@@ -146,6 +146,10 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
 .tab-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
 .badge{background:var(--surface2);border:1px solid var(--border);
   border-radius:10px;padding:2px 8px;font-size:11px;color:var(--muted)}
+.flag-dot{display:inline-block;width:8px;height:8px;border-radius:50%;flex-shrink:0;vertical-align:middle}
+.flag-dots{display:inline-flex;gap:3px;align-items:center;margin-right:5px}
+.wallet-flag-pill{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;
+  border-radius:10px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap}
 
 /* ── Modal ── */
 .moverlay{position:fixed;inset:0;background:rgba(0,0,0,.72);display:flex;
@@ -334,6 +338,7 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
     </nav>
   </div>
   <div>
+    <button class="btn btn-ghost" onclick="openFlagsModal()" style="margin-right:6px">⚑ Flags</button>
     <button class="btn btn-outline" onclick="openClusterModal(null)" style="margin-right:6px">+ New Cluster</button>
     <button class="btn btn-primary" onclick="openAddModal()">+ Add Wallet</button>
   </div>
@@ -413,6 +418,7 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
   <div class="d-hdr">
     <div>
       <h2 id="d-name" class="d-name"></h2>
+      <div id="d-flags" style="display:flex;gap:5px;align-items:center;flex-wrap:wrap;margin-bottom:4px"></div>
       <span id="d-addr" class="d-addr"></span>
       <div class="notes-wrap">
         <textarea id="d-notes" class="notes-input" rows="1"
@@ -907,6 +913,99 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
   </div>
 </div>
 
+<!-- ── Flag management modal ── -->
+<div id="m-flags" class="moverlay" style="display:none" onclick="overlayClick(event,'m-flags')">
+  <div class="modal modal-lg" onclick="event.stopPropagation()">
+    <div class="modal-hdr">
+      <h3>Manage Flags</h3>
+      <button class="btn-close" onclick="closeModal('m-flags')">✕</button>
+    </div>
+    <div class="modal-body" style="flex-direction:row;gap:20px;min-height:300px;padding:20px">
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <span style="font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Flags</span>
+          <button class="btn btn-outline" style="padding:4px 10px;font-size:12px" onclick="flagFormNew()">+ New</button>
+        </div>
+        <div id="flags-list"></div>
+      </div>
+      <div id="flags-form-panel" style="width:240px;flex-shrink:0;display:none;border-left:1px solid var(--border);padding-left:20px">
+        <div style="font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px" id="flag-form-title">New Flag</div>
+        <div class="fg" style="margin-bottom:10px">
+          <label class="flbl">Name</label>
+          <input id="flag-f-name" type="text" class="finp" placeholder="e.g. Whale" autocomplete="off">
+        </div>
+        <div class="fg" style="margin-bottom:10px">
+          <label class="flbl">Colour</label>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input id="flag-f-color" type="color" value="#58a6ff"
+              style="width:40px;height:32px;border:1px solid var(--border);border-radius:4px;background:none;cursor:pointer;padding:2px"
+              oninput="document.getElementById('flag-f-color-hex').value=this.value">
+            <input id="flag-f-color-hex" type="text" class="finp" placeholder="#58a6ff"
+              style="flex:1;font-family:var(--mono);font-size:13px"
+              oninput="syncColorPicker(this.value)">
+          </div>
+        </div>
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;margin-bottom:12px">
+          <input id="flag-f-auto" type="checkbox" onchange="toggleAutoCondition()">
+          Auto-assign by rule
+        </label>
+        <div id="flag-f-cond-wrap" style="display:none">
+          <div class="fg" style="margin-bottom:8px">
+            <label class="flbl">Field</label>
+            <select id="flag-f-field" class="finp">
+              <option value="total_trades">Total Trades</option>
+              <option value="realized_pnl_eth">Realized PnL (ETH)</option>
+              <option value="win_rate">Win Rate (0–1)</option>
+              <option value="open_positions">Open Positions</option>
+              <option value="collections_traded">Collections Traded</option>
+              <option value="total_buy_eth">Total Spent (ETH)</option>
+            </select>
+          </div>
+          <div class="fg" style="margin-bottom:8px">
+            <label class="flbl">Operator</label>
+            <select id="flag-f-op" class="finp">
+              <option value=">">&gt; greater than</option>
+              <option value=">=">&gt;= greater or equal</option>
+              <option value="<">&lt; less than</option>
+              <option value="<=">&lt;= less or equal</option>
+              <option value="=">= equals</option>
+              <option value="!=">!= not equals</option>
+            </select>
+          </div>
+          <div class="fg" style="margin-bottom:12px">
+            <label class="flbl">Value</label>
+            <input id="flag-f-value" type="number" step="any" class="finp" style="font-family:var(--mono)" placeholder="e.g. 1000">
+          </div>
+        </div>
+        <div id="flags-form-err" style="color:var(--red);font-size:12px;display:none;margin-bottom:8px"></div>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-primary" style="flex:1" onclick="saveFlag()">Save</button>
+          <button id="flag-delete-btn" class="btn btn-ghost" style="display:none;color:var(--red)" onclick="deleteFlag()">Delete</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Wallet flag assignment modal ── -->
+<div id="m-wallet-flags" class="moverlay" style="display:none" onclick="overlayClick(event,'m-wallet-flags')">
+  <div class="modal modal-sm" onclick="event.stopPropagation()">
+    <div class="modal-hdr">
+      <h3>Assign Flags</h3>
+      <button class="btn-close" onclick="closeModal('m-wallet-flags')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div id="wf-flag-list" style="display:flex;flex-direction:column;gap:8px"></div>
+      <div style="margin-top:10px;border-top:1px solid var(--border);padding-top:10px">
+        <button class="btn btn-ghost" style="font-size:12px;padding:3px 8px" onclick="closeModal('m-wallet-flags');openFlagsModal()">Manage flags…</button>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-primary btn-full" onclick="saveWalletFlags()">Save</button>
+    </div>
+  </div>
+</div>
+
 <script>
 // ─────────────────────────────────────────────────────────────────────────────
 // State
@@ -1101,7 +1200,16 @@ function renderWalletRow(row) {
   } else if (!isClusterRow && w.entity_id != null) {
     badge = ` <span style="font-size:10px;color:var(--muted);border:1px solid var(--border);border-radius:3px;padding:0 4px" title="Member of cluster">&subset;</span>`;
   }
-  const nameCell = esc(displayName) + badge;
+  let flagDots = '';
+  let firstTdBorder = '';
+  if (!isClusterRow && w.flags && w.flags.length) {
+    flagDots = '<span class="flag-dots">' +
+      w.flags.map(f =>
+        `<span class="flag-dot" style="background:${esc(f.color)}" title="${esc(f.name)}"></span>`
+      ).join('') + '</span>';
+    firstTdBorder = `border-left:3px solid ${esc(w.flags[0].color)};`;
+  }
+  const nameCell = flagDots + esc(displayName) + badge;
   const navTarget = isClusterRow ? `/entity/${w.entity_id}` : `/wallet/${esc(addr)}`;
   const pnlCls   = pnl  > 0 ? 'pos' : pnl  < 0 ? 'neg' : '';
   const roiCls   = roi  > 0 ? 'pos' : roi  < 0 ? 'neg' : '';
@@ -1111,7 +1219,7 @@ function renderWalletRow(row) {
   const pnlTxt   = pnl  != null ? (pnl  >= 0 ? '+' : '') + pnl.toFixed(4)  + ' ETH' : '—';
   const spentTxt = spent != null ? spent.toFixed(4) + ' ETH' : '—';
   return `<tr class="clickable" onclick="navigate('${navTarget}')">
-    <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(displayName)}">${nameCell}</td>
+    <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;${firstTdBorder}" title="${esc(displayName)}">${nameCell}</td>
     <td class="mono tr pnl-cell ${pnlCls}">${pnlTxt}</td>
     <td class="mono tr pnl-cell ${roiCls}">${roiTxt}</td>
     <td class="tc ${wrCls}">${wrTxt}</td>
@@ -1334,6 +1442,19 @@ function renderDetail(data) {
 
   const wallet = data.wallet;
   document.getElementById('d-name').textContent = wallet.name || 'Unnamed Wallet';
+
+  const dFlags = document.getElementById('d-flags');
+  const wflags = wallet.flags || [];
+  const flagPills = wflags.map(f =>
+    `<span class="wallet-flag-pill"
+      style="background:${esc(f.color)}22;border:1px solid ${esc(f.color)};color:${esc(f.color)}"
+      onclick="openWalletFlagsModal('${esc(wallet.address)}')"
+      title="Click to edit flags">${esc(f.name)}</span>`
+  ).join('');
+  const flagBtn = wallet.entity_id == null
+    ? `<button class="btn btn-outline" style="padding:2px 8px;font-size:11px" onclick="openWalletFlagsModal('${esc(wallet.address)}')">⚑ Flags</button>`
+    : '';
+  dFlags.innerHTML = flagPills + flagBtn;
 
   const addrEl = document.getElementById('d-addr');
   if (wallet.entity_id != null) {
@@ -4429,6 +4550,167 @@ async function dissolveCluster() {
   } catch {
     document.getElementById('cluster-err').textContent = 'Delete failed.';
     document.getElementById('cluster-err').style.display = '';
+  }
+}
+
+// ── Flag management ────────────────────────────────────────────────────────────
+
+let _editingFlagId = null;
+
+async function openFlagsModal() {
+  const flags = await fetch('/api/flags').then(r => r.json());
+  renderFlagsList(flags);
+  document.getElementById('flags-form-panel').style.display = 'none';
+  document.getElementById('m-flags').style.display = '';
+}
+
+function renderFlagsList(flags) {
+  const el = document.getElementById('flags-list');
+  if (!flags.length) {
+    el.innerHTML = '<p style="color:var(--muted);font-size:13px">No flags yet. Click + New to create one.</p>';
+    return;
+  }
+  el.innerHTML = flags.map(f => `
+    <div style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;cursor:pointer;border:1px solid var(--border);margin-bottom:5px"
+      onclick="flagFormEdit(${JSON.stringify(f)})">
+      <span class="flag-dot" style="background:${esc(f.color)};width:12px;height:12px"></span>
+      <span style="flex:1;font-size:13px">${esc(f.name)}</span>
+      ${f.is_auto ? '<span style="font-size:10px;color:var(--muted);border:1px solid var(--border);border-radius:3px;padding:0 4px">auto</span>' : ''}
+    </div>
+  `).join('');
+}
+
+function flagFormNew() {
+  _editingFlagId = null;
+  document.getElementById('flag-form-title').textContent = 'New Flag';
+  document.getElementById('flag-f-name').value = '';
+  document.getElementById('flag-f-color').value = '#58a6ff';
+  document.getElementById('flag-f-color-hex').value = '#58a6ff';
+  document.getElementById('flag-f-auto').checked = false;
+  document.getElementById('flag-f-cond-wrap').style.display = 'none';
+  document.getElementById('flag-f-field').value = 'total_trades';
+  document.getElementById('flag-f-op').value = '>';
+  document.getElementById('flag-f-value').value = '';
+  document.getElementById('flag-delete-btn').style.display = 'none';
+  document.getElementById('flags-form-err').style.display = 'none';
+  document.getElementById('flags-form-panel').style.display = '';
+}
+
+function flagFormEdit(f) {
+  _editingFlagId = f.id;
+  document.getElementById('flag-form-title').textContent = 'Edit Flag';
+  document.getElementById('flag-f-name').value = f.name;
+  document.getElementById('flag-f-color').value = f.color;
+  document.getElementById('flag-f-color-hex').value = f.color;
+  document.getElementById('flag-f-auto').checked = !!f.is_auto;
+  document.getElementById('flag-f-cond-wrap').style.display = f.is_auto ? '' : 'none';
+  if (f.condition_json) {
+    try {
+      const c = JSON.parse(f.condition_json);
+      document.getElementById('flag-f-field').value = c.field || 'total_trades';
+      document.getElementById('flag-f-op').value = c.op || '>';
+      document.getElementById('flag-f-value').value = c.value ?? '';
+    } catch {}
+  }
+  document.getElementById('flag-delete-btn').style.display = '';
+  document.getElementById('flags-form-err').style.display = 'none';
+  document.getElementById('flags-form-panel').style.display = '';
+}
+
+function toggleAutoCondition() {
+  const checked = document.getElementById('flag-f-auto').checked;
+  document.getElementById('flag-f-cond-wrap').style.display = checked ? '' : 'none';
+}
+
+function syncColorPicker(val) {
+  if (/^#[0-9a-fA-F]{6}$/.test(val)) {
+    document.getElementById('flag-f-color').value = val;
+  }
+}
+
+async function saveFlag() {
+  const name  = document.getElementById('flag-f-name').value.trim();
+  const color = document.getElementById('flag-f-color').value;
+  const isAuto = document.getElementById('flag-f-auto').checked;
+  const errEl = document.getElementById('flags-form-err');
+
+  if (!name) { errEl.textContent = 'Name is required.'; errEl.style.display = ''; return; }
+  errEl.style.display = 'none';
+
+  let condition_json = null;
+  if (isAuto) {
+    const field = document.getElementById('flag-f-field').value;
+    const op    = document.getElementById('flag-f-op').value;
+    const value = parseFloat(document.getElementById('flag-f-value').value);
+    if (isNaN(value)) { errEl.textContent = 'Enter a numeric threshold value.'; errEl.style.display = ''; return; }
+    condition_json = JSON.stringify({ field, op, value });
+  }
+
+  const url = _editingFlagId ? `/api/flags/${_editingFlagId}` : '/api/flags';
+  const method = _editingFlagId ? 'PATCH' : 'POST';
+  const res = await fetch(url, {
+    method, headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, color, is_auto: isAuto ? 1 : 0, condition_json }),
+  });
+  if (!res.ok) { const e = await res.json(); errEl.textContent = e.error || 'Error'; errEl.style.display = ''; return; }
+  walletCache = null;
+  const flags = await fetch('/api/flags').then(r => r.json());
+  renderFlagsList(flags);
+  document.getElementById('flags-form-panel').style.display = 'none';
+}
+
+async function deleteFlag() {
+  if (!_editingFlagId) return;
+  await fetch(`/api/flags/${_editingFlagId}`, { method: 'DELETE' });
+  walletCache = null;
+  _editingFlagId = null;
+  const flags = await fetch('/api/flags').then(r => r.json());
+  renderFlagsList(flags);
+  document.getElementById('flags-form-panel').style.display = 'none';
+}
+
+// ── Wallet flag assignment ─────────────────────────────────────────────────────
+
+let _walletFlagsTarget = null;
+
+async function openWalletFlagsModal(address) {
+  _walletFlagsTarget = address;
+  const [allFlags, assignedFlags] = await Promise.all([
+    fetch('/api/flags').then(r => r.json()),
+    fetch(`/api/wallet/${address}/flags`).then(r => r.json()).catch(() => []),
+  ]);
+  const assigned = new Set(assignedFlags.map(f => f.id));
+  const el = document.getElementById('wf-flag-list');
+  if (!allFlags.length) {
+    el.innerHTML = '<p style="color:var(--muted);font-size:13px">No flags defined yet.</p>';
+  } else {
+    el.innerHTML = allFlags.map(f => `
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:${f.is_auto ? 'default' : 'pointer'}">
+        <input type="checkbox" data-flag-id="${f.id}" ${assigned.has(f.id) ? 'checked' : ''}
+          ${f.is_auto ? 'disabled title="Auto-assigned by rule"' : ''}
+          style="accent-color:${esc(f.color)};width:15px;height:15px">
+        <span class="flag-dot" style="background:${esc(f.color)}"></span>
+        <span style="${f.is_auto ? 'color:var(--muted)' : ''}">${esc(f.name)}</span>
+        ${f.is_auto ? '<span style="font-size:10px;color:var(--muted);border:1px solid var(--border);border-radius:3px;padding:0 3px">auto</span>' : ''}
+      </label>
+    `).join('');
+  }
+  document.getElementById('m-wallet-flags').style.display = '';
+}
+
+async function saveWalletFlags() {
+  const checks = document.querySelectorAll('#wf-flag-list input[type=checkbox]:not(:disabled)');
+  const flagIds = [...checks].filter(c => c.checked).map(c => +c.dataset.flagId);
+  await fetch(`/api/wallet/${_walletFlagsTarget}/flags`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ flag_ids: flagIds }),
+  });
+  closeModal('m-wallet-flags');
+  walletCache = null;
+  if (typeof currentWallet !== 'undefined' && currentWallet === _walletFlagsTarget) {
+    delete reportCache[currentWallet + ':' + detailDays];
+    fetchAndRenderDetail(currentWallet, detailDays);
   }
 }
 </script>

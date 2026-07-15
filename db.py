@@ -59,6 +59,23 @@ CREATE TABLE IF NOT EXISTS wallets (
     created_at  INTEGER
 );
 
+CREATE TABLE IF NOT EXISTS flags (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    name           TEXT NOT NULL,
+    color          TEXT NOT NULL DEFAULT '#58a6ff',
+    is_auto        INTEGER NOT NULL DEFAULT 0,
+    condition_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS wallet_flags (
+    wallet_address TEXT NOT NULL,
+    flag_id        INTEGER NOT NULL,
+    PRIMARY KEY (wallet_address, flag_id),
+    FOREIGN KEY (flag_id) REFERENCES flags(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_wallet_flags_addr ON wallet_flags(wallet_address);
+
 CREATE TABLE IF NOT EXISTS wallet_summaries (
     wallet_address      TEXT PRIMARY KEY,
     computed_at         INTEGER,
@@ -381,6 +398,136 @@ def list_wallets(conn) -> list:
         LEFT JOIN wallet_summaries ws ON w.address = ws.wallet_address
         ORDER BY w.name
     """).fetchall()
+
+
+# ---------- flags ----------
+
+def list_flags(conn) -> list:
+    return conn.execute("SELECT * FROM flags ORDER BY name").fetchall()
+
+
+def upsert_flag(conn, flag_id, name: str, color: str,
+                is_auto: int = 0, condition_json: str = None) -> int:
+    if flag_id:
+        conn.execute(
+            "UPDATE flags SET name=?, color=?, is_auto=?, condition_json=? WHERE id=?",
+            (name, color, is_auto, condition_json, flag_id),
+        )
+        return flag_id
+    cur = conn.execute(
+        "INSERT INTO flags (name, color, is_auto, condition_json) VALUES (?,?,?,?)",
+        (name, color, is_auto, condition_json),
+    )
+    return cur.lastrowid
+
+
+def delete_flag(conn, flag_id: int):
+    conn.execute("DELETE FROM wallet_flags WHERE flag_id = ?", (flag_id,))
+    conn.execute("DELETE FROM flags WHERE id = ?", (flag_id,))
+
+
+def get_flags_for_wallets(conn, addresses: list) -> dict:
+    """Returns {address_lower: [flag_dict, ...]}. Single JOIN query."""
+    if not addresses:
+        return {}
+    ph = ",".join("?" * len(addresses))
+    rows = conn.execute(
+        f"SELECT wf.wallet_address, f.id, f.name, f.color, f.is_auto "
+        f"FROM wallet_flags wf JOIN flags f ON wf.flag_id = f.id "
+        f"WHERE wf.wallet_address IN ({ph}) ORDER BY wf.wallet_address, f.name",
+        [a.lower() for a in addresses],
+    ).fetchall()
+    result = {a.lower(): [] for a in addresses}
+    for row in rows:
+        result[row["wallet_address"]].append(dict(row))
+    return result
+
+
+def assign_flag(conn, address: str, flag_id: int):
+    conn.execute(
+        "INSERT OR IGNORE INTO wallet_flags (wallet_address, flag_id) VALUES (?,?)",
+        (address.lower(), flag_id),
+    )
+
+
+def unassign_flag(conn, address: str, flag_id: int):
+    conn.execute(
+        "DELETE FROM wallet_flags WHERE wallet_address=? AND flag_id=?",
+        (address.lower(), flag_id),
+    )
+
+
+def apply_auto_flags_for_wallet(conn, address: str):
+    """Re-evaluates all is_auto=1 flags against wallet_summaries. Safe when no summary exists."""
+    import json as _json
+    summary = conn.execute(
+        "SELECT * FROM wallet_summaries WHERE wallet_address = ?",
+        (address.lower(),),
+    ).fetchone()
+    auto_flags = conn.execute("SELECT * FROM flags WHERE is_auto = 1").fetchall()
+    ALLOWED_FIELDS = {
+        "total_trades", "realized_pnl_eth", "win_rate",
+        "open_positions", "collections_traded", "total_buy_eth",
+    }
+    for flag in auto_flags:
+        cond_str = flag["condition_json"]
+        if not cond_str:
+            continue
+        try:
+            cond = _json.loads(cond_str)
+            field = cond.get("field")
+            op    = cond.get("op")
+            value = cond.get("value")
+            if not field or not op or value is None or field not in ALLOWED_FIELDS:
+                continue
+            actual = summary[field] if summary else None
+            if actual is None:
+                conn.execute(
+                    "DELETE FROM wallet_flags WHERE wallet_address=? AND flag_id=?",
+                    (address.lower(), flag["id"]),
+                )
+                continue
+            match = {
+                ">":  actual >  value,
+                "<":  actual <  value,
+                ">=": actual >= value,
+                "<=": actual <= value,
+                "=":  actual == value,
+                "!=": actual != value,
+            }.get(op, False)
+            if match:
+                conn.execute(
+                    "INSERT OR IGNORE INTO wallet_flags (wallet_address, flag_id) VALUES (?,?)",
+                    (address.lower(), flag["id"]),
+                )
+            else:
+                conn.execute(
+                    "DELETE FROM wallet_flags WHERE wallet_address=? AND flag_id=?",
+                    (address.lower(), flag["id"]),
+                )
+        except Exception:
+            continue
+
+
+def apply_auto_name_if_blank(conn, address: str):
+    """Sets 'Vol_<trades_24m>_<yyyy-mm-dd>' on wallets with no name."""
+    import time as _time
+    from datetime import datetime, timezone
+    wallet = get_wallet(conn, address.lower())
+    if not wallet or wallet["name"]:
+        return
+    cutoff = int(_time.time()) - 730 * 86400
+    row = conn.execute(
+        "SELECT COUNT(*) AS cnt FROM trades WHERE wallet_address=? AND block_timestamp>=?",
+        (address.lower(), cutoff),
+    ).fetchone()
+    trade_count = row["cnt"] if row else 0
+    created_ts = wallet["created_at"] or int(_time.time())
+    import_date = datetime.fromtimestamp(created_ts, tz=timezone.utc).strftime("%Y-%m-%d")
+    conn.execute(
+        "UPDATE wallets SET name=? WHERE address=? AND (name IS NULL OR name='')",
+        (f"Vol_{trade_count}_{import_date}", address.lower()),
+    )
 
 
 # ---------- wallet summaries ----------

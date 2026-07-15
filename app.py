@@ -171,6 +171,11 @@ def api_wallets():
         -(x["realized_pnl_eth"]) if x.get("realized_pnl_eth") is not None else float("inf"),
         x.get("name") or ""
     ))
+    all_addrs = [r["address"] for r in result if r.get("address")]
+    with db.get_conn() as _fc:
+        flags_map = db.get_flags_for_wallets(_fc, all_addrs)
+    for row in result:
+        row["flags"] = flags_map.get((row.get("address") or "").lower(), [])
     return jsonify(result)
 
 
@@ -217,6 +222,7 @@ def api_report(address):
             result = get_cached_analytics(conn, address)
             # Keep the all-time summary cache fresh even on cache hits
             db.upsert_wallet_summary(conn, address, result["summary"], latest_trade_ts)
+            db.apply_auto_flags_for_wallet(conn, address)
 
     # Player card — uses unstripped per_collection (still has holding_times)
     addr_to_slug = {}
@@ -240,11 +246,15 @@ def api_report(address):
         s2.pop("holding_times", None)
         per_col[addr] = s2
 
+    with db.get_conn() as _fc:
+        wallet_flags = db.get_flags_for_wallets(_fc, [address]).get(address.lower(), [])
+
     return jsonify({
         "wallet": {
             "address": address,
             "name": wallet_row["name"] if wallet_row else None,
             "notes": wallet_row["notes"] if wallet_row else None,
+            "flags": wallet_flags,
         },
         "summary": result["summary"],
         "per_collection": per_col,
@@ -381,6 +391,12 @@ def api_sync():
                     yield f"data: {json.dumps({'type': 'log', 'message': line})}\n\n"
             proc.wait()
             if proc.returncode == 0:
+                try:
+                    with db.get_conn() as _conn:
+                        db.apply_auto_name_if_blank(_conn, address)
+                        db.apply_auto_flags_for_wallet(_conn, address)
+                except Exception as _e:
+                    yield f"data: {json.dumps({'type': 'log', 'message': f'[warn] post-sync: {_e}'})}\n\n"
                 yield f"data: {json.dumps({'type': 'done', 'address': address.lower()})}\n\n"
             else:
                 yield f"data: {json.dumps({'type': 'error', 'message': f'Sync failed (exit {proc.returncode})'})}\n\n"
@@ -409,6 +425,91 @@ def api_wallet_update(address):
     db.init_db()
     with db.get_conn() as conn:
         db.upsert_wallet(conn, address, name=name, notes=notes)
+    return jsonify({"ok": True})
+
+
+# ── API: flags ────────────────────────────────────────────────────────────────
+
+@app.route("/api/flags", methods=["GET"])
+def api_flags_list():
+    db.init_db()
+    with db.get_conn() as conn:
+        return jsonify([dict(r) for r in db.list_flags(conn)])
+
+
+@app.route("/api/flags", methods=["POST"])
+def api_flags_create():
+    data = request.get_json() or {}
+    name  = (data.get("name") or "").strip()
+    color = (data.get("color") or "#58a6ff").strip()
+    is_auto = int(bool(data.get("is_auto")))
+    cond   = data.get("condition_json")
+    if not name:
+        return jsonify({"error": "name required"}), 400
+    db.init_db()
+    with db.get_conn() as conn:
+        fid = db.upsert_flag(conn, None, name, color, is_auto, cond)
+        if is_auto:
+            for row in conn.execute("SELECT address FROM wallets").fetchall():
+                db.apply_auto_flags_for_wallet(conn, row["address"])
+    return jsonify({"id": fid})
+
+
+@app.route("/api/flags/<int:flag_id>", methods=["PATCH"])
+def api_flags_update(flag_id):
+    data = request.get_json() or {}
+    db.init_db()
+    with db.get_conn() as conn:
+        existing = conn.execute("SELECT * FROM flags WHERE id=?", (flag_id,)).fetchone()
+        if not existing:
+            return jsonify({"error": "not found"}), 404
+        name    = (data.get("name") or existing["name"]).strip()
+        color   = (data.get("color") or existing["color"]).strip()
+        is_auto = int(bool(data.get("is_auto", existing["is_auto"])))
+        cond    = data.get("condition_json", existing["condition_json"])
+        db.upsert_flag(conn, flag_id, name, color, is_auto, cond)
+        if is_auto:
+            for row in conn.execute("SELECT address FROM wallets").fetchall():
+                db.apply_auto_flags_for_wallet(conn, row["address"])
+    return jsonify({"ok": True})
+
+
+@app.route("/api/flags/<int:flag_id>", methods=["DELETE"])
+def api_flags_delete(flag_id):
+    db.init_db()
+    with db.get_conn() as conn:
+        db.delete_flag(conn, flag_id)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/wallet/<address>/flags", methods=["GET"])
+def api_wallet_flags_get(address):
+    address = address.lower()
+    db.init_db()
+    with db.get_conn() as conn:
+        flags = db.get_flags_for_wallets(conn, [address]).get(address, [])
+    return jsonify(flags)
+
+
+@app.route("/api/wallet/<address>/flags", methods=["PUT"])
+def api_wallet_flags_put(address):
+    """Replace manual flag assignments for this wallet. Auto flags are untouched."""
+    address = address.lower()
+    data = request.get_json() or {}
+    flag_ids = [int(x) for x in (data.get("flag_ids") or [])]
+    db.init_db()
+    with db.get_conn() as conn:
+        manual_flag_ids = [r["id"] for r in conn.execute(
+            "SELECT id FROM flags WHERE is_auto=0"
+        ).fetchall()]
+        if manual_flag_ids:
+            ph = ",".join("?" * len(manual_flag_ids))
+            conn.execute(
+                f"DELETE FROM wallet_flags WHERE wallet_address=? AND flag_id IN ({ph})",
+                [address] + manual_flag_ids,
+            )
+        for fid in flag_ids:
+            db.assign_flag(conn, address, fid)
     return jsonify({"ok": True})
 
 
