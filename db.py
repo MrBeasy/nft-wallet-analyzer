@@ -136,6 +136,35 @@ CREATE TABLE IF NOT EXISTS collection_sync_state (
     oldest_ts_fetched   INTEGER,
     last_synced_at      INTEGER
 );
+
+CREATE TABLE IF NOT EXISTS entities (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL,
+    notes       TEXT,
+    created_at  INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS entity_summaries (
+    entity_id           INTEGER PRIMARY KEY,
+    computed_at         INTEGER,
+    latest_trade_ts     INTEGER,
+    total_trades        INTEGER,
+    total_buys          INTEGER,
+    total_sells         INTEGER,
+    unmatched_sells     INTEGER,
+    total_buy_eth       REAL,
+    total_sell_eth      REAL,
+    total_fees_eth      REAL,
+    total_gas_eth       REAL,
+    realized_pnl_eth    REAL,
+    win_rate            REAL,
+    avg_holding_secs    REAL,
+    open_positions      INTEGER,
+    open_cost_basis_eth REAL,
+    collections_traded  INTEGER,
+    wash_legs           INTEGER DEFAULT 0,
+    wash_cost_eth       REAL DEFAULT 0
+);
 """
 
 
@@ -194,6 +223,7 @@ def init_db():
             "ALTER TABLE collections ADD COLUMN avg_daily_sales_alltime REAL",
             "ALTER TABLE collections ADD COLUMN avg_daily_sales_30d REAL",
             "ALTER TABLE collections ADD COLUMN total_trades INTEGER",
+            "ALTER TABLE wallets ADD COLUMN entity_id INTEGER",
         ]:
             try:
                 conn.execute(col_def)
@@ -602,3 +632,134 @@ def set_market_sync_state(conn, slug: str, last_event_ts: int, last_synced_at: i
         "last_synced_at=excluded.last_synced_at",
         (slug, last_event_ts, last_synced_at),
     )
+
+
+# ---------- entities ----------
+
+def create_entity(conn, name: str, notes: str = None) -> int:
+    import time as _time
+    cur = conn.execute(
+        "INSERT INTO entities (name, notes, created_at) VALUES (?, ?, ?)",
+        (name, notes, int(_time.time()))
+    )
+    return cur.lastrowid
+
+
+def get_entity(conn, entity_id: int):
+    return conn.execute("SELECT * FROM entities WHERE id = ?", (entity_id,)).fetchone()
+
+
+def update_entity(conn, entity_id: int, name: str = None, notes: str = None):
+    conn.execute(
+        "UPDATE entities SET name = COALESCE(?, name), notes = COALESCE(?, notes) WHERE id = ?",
+        (name, notes, entity_id)
+    )
+
+
+def delete_entity(conn, entity_id: int):
+    conn.execute("UPDATE wallets SET entity_id = NULL WHERE entity_id = ?", (entity_id,))
+    conn.execute("DELETE FROM entity_summaries WHERE entity_id = ?", (entity_id,))
+    conn.execute("DELETE FROM entities WHERE id = ?", (entity_id,))
+
+
+def get_entity_members(conn, entity_id: int) -> list:
+    rows = conn.execute(
+        "SELECT address FROM wallets WHERE entity_id = ? ORDER BY address", (entity_id,)
+    ).fetchall()
+    return [r["address"] for r in rows]
+
+
+def get_entity_member_rows(conn, entity_id: int) -> list:
+    rows = conn.execute(
+        "SELECT address, name FROM wallets WHERE entity_id = ? ORDER BY address", (entity_id,)
+    ).fetchall()
+    return [{"address": r["address"], "name": r["name"]} for r in rows]
+
+
+def set_entity_members(conn, entity_id: int, addresses: list):
+    conn.execute("UPDATE wallets SET entity_id = NULL WHERE entity_id = ?", (entity_id,))
+    if addresses:
+        ph = ",".join("?" * len(addresses))
+        conn.execute(
+            f"UPDATE wallets SET entity_id = ? WHERE address IN ({ph})",
+            [entity_id] + [a.lower() for a in addresses]
+        )
+
+
+def get_trades_multi(conn, addresses: list, since: int = None) -> list:
+    if not addresses:
+        return []
+    ph = ",".join("?" * len(addresses))
+    params = [a.lower() for a in addresses]
+    if since:
+        return conn.execute(f"""
+            SELECT t.*, c.name AS collection_name, c.total_fee_bps
+            FROM trades t
+            LEFT JOIN collections c ON t.collection_address = c.contract_address
+            WHERE t.wallet_address IN ({ph}) AND t.block_timestamp >= ?
+            ORDER BY t.block_timestamp ASC
+        """, params + [since]).fetchall()
+    return conn.execute(f"""
+        SELECT t.*, c.name AS collection_name, c.total_fee_bps
+        FROM trades t
+        LEFT JOIN collections c ON t.collection_address = c.contract_address
+        WHERE t.wallet_address IN ({ph})
+        ORDER BY t.block_timestamp ASC
+    """, params).fetchall()
+
+
+def get_latest_trade_ts_multi(conn, addresses: list) -> int:
+    if not addresses:
+        return 0
+    ph = ",".join("?" * len(addresses))
+    row = conn.execute(
+        f"SELECT MAX(block_timestamp) AS ts FROM trades WHERE wallet_address IN ({ph})",
+        [a.lower() for a in addresses]
+    ).fetchone()
+    return row["ts"] or 0
+
+
+def get_entity_summary(conn, entity_id: int):
+    return conn.execute(
+        "SELECT * FROM entity_summaries WHERE entity_id = ?", (entity_id,)
+    ).fetchone()
+
+
+def upsert_entity_summary(conn, entity_id: int, summary: dict, latest_trade_ts: int):
+    import time as _time
+    s = summary
+    conn.execute("""
+        INSERT INTO entity_summaries
+            (entity_id, computed_at, latest_trade_ts, total_trades, total_buys, total_sells,
+             unmatched_sells, total_buy_eth, total_sell_eth, total_fees_eth, total_gas_eth,
+             realized_pnl_eth, win_rate, avg_holding_secs, open_positions, open_cost_basis_eth,
+             collections_traded, wash_legs, wash_cost_eth)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(entity_id) DO UPDATE SET
+            computed_at         = excluded.computed_at,
+            latest_trade_ts     = excluded.latest_trade_ts,
+            total_trades        = excluded.total_trades,
+            total_buys          = excluded.total_buys,
+            total_sells         = excluded.total_sells,
+            unmatched_sells     = excluded.unmatched_sells,
+            total_buy_eth       = excluded.total_buy_eth,
+            total_sell_eth      = excluded.total_sell_eth,
+            total_fees_eth      = excluded.total_fees_eth,
+            total_gas_eth       = excluded.total_gas_eth,
+            realized_pnl_eth    = excluded.realized_pnl_eth,
+            win_rate            = excluded.win_rate,
+            avg_holding_secs    = excluded.avg_holding_secs,
+            open_positions      = excluded.open_positions,
+            open_cost_basis_eth = excluded.open_cost_basis_eth,
+            collections_traded  = excluded.collections_traded,
+            wash_legs           = excluded.wash_legs,
+            wash_cost_eth       = excluded.wash_cost_eth
+    """, (
+        entity_id, int(_time.time()), latest_trade_ts,
+        s["total_trades"], s["total_buys"], s["total_sells"],
+        s["unmatched_sells"],
+        s["total_buy_eth"], s["total_sell_eth"], s["total_fees_eth"], s["total_gas_eth"],
+        s["realized_pnl_eth"], s["win_rate"], s.get("avg_holding") or 0,
+        s["open_positions"], s["open_cost_basis_eth"], s["collections_traded"],
+        s.get("wash_legs", 0), s.get("wash_cost_eth", 0.0),
+    ))

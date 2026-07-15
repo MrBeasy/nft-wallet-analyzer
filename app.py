@@ -52,12 +52,12 @@ def _wallet_stats_from_matched(matched):
 
 @app.route("/api/wallets")
 def api_wallets():
-    sell_from  = request.args.get("sell_from",  type=int)  # Unix timestamp, inclusive
-    sell_until = request.args.get("sell_until", type=int)  # Unix timestamp, inclusive
+    sell_from  = request.args.get("sell_from",  type=int)
+    sell_until = request.args.get("sell_until", type=int)
     db.init_db()
     with db.get_conn() as conn:
         rows = conn.execute("""
-            SELECT w.address, w.name, w.notes,
+            SELECT w.address, w.name, w.notes, w.entity_id,
                    s.last_synced_at, s.full_sync_complete,
                    ws.realized_pnl_eth, ws.total_trades, ws.win_rate,
                    ws.collections_traded, ws.computed_at, ws.open_positions,
@@ -68,19 +68,130 @@ def api_wallets():
             ORDER BY ws.realized_pnl_eth DESC, w.name
         """).fetchall()
 
+        entity_rows = conn.execute("""
+            SELECT e.id, e.name, e.notes,
+                   es.realized_pnl_eth, es.total_trades, es.win_rate,
+                   es.collections_traded, es.computed_at, es.open_positions,
+                   es.avg_holding_secs, es.total_buy_eth, es.latest_trade_ts,
+                   es.wash_legs, es.wash_cost_eth
+            FROM entities e
+            LEFT JOIN entity_summaries es ON e.id = es.entity_id
+        """).fetchall()
+        entity_map = {e["id"]: dict(e) for e in entity_rows}
+
         result = []
+        seen_entities = set()
+
         for r in rows:
             d = dict(r)
-            if sell_from is not None or sell_until is not None:
-                ar = get_cached_analytics(conn, d["address"])
-                matched = [
-                    m for m in ar.get("matched_trades", [])
-                    if (sell_from  is None or m["sell_ts"] >= sell_from)
-                    and (sell_until is None or m["sell_ts"] <= sell_until)
-                ]
-                d.update(_wallet_stats_from_matched(matched))
-            result.append(d)
+            eid = d.get("entity_id")
+
+            if eid is not None:
+                if eid in seen_entities:
+                    continue
+                seen_entities.add(eid)
+
+                e = entity_map.get(eid, {})
+                members = db.get_entity_members(conn, eid)
+
+                # Self-heal: recompute summary if trades have been added since last compute
+                latest_ts = db.get_latest_trade_ts_multi(conn, members) if members else 0
+                if members and (not e.get("latest_trade_ts") or e["latest_trade_ts"] < latest_ts):
+                    er = get_cached_entity_analytics(conn, eid)
+                    if er and er.get("summary"):
+                        db.upsert_entity_summary(conn, eid, er["summary"], latest_ts)
+                        s = er["summary"]
+                        e.update({
+                            "realized_pnl_eth": s["realized_pnl_eth"],
+                            "total_trades": s["total_trades"],
+                            "win_rate": s["win_rate"],
+                            "collections_traded": s["collections_traded"],
+                            "computed_at": None,
+                            "open_positions": s["open_positions"],
+                            "avg_holding_secs": s.get("avg_holding") or 0,
+                            "total_buy_eth": s["total_buy_eth"],
+                            "wash_legs": s.get("wash_legs", 0),
+                            "wash_cost_eth": s.get("wash_cost_eth", 0.0),
+                            "latest_trade_ts": latest_ts,
+                        })
+
+                last_synced = None
+                full_sync = 1
+                for addr in members:
+                    ss = db.get_sync_state(conn, addr)
+                    if ss and ss["last_synced_at"]:
+                        if last_synced is None or ss["last_synced_at"] < last_synced:
+                            last_synced = ss["last_synced_at"]
+                    if not ss or not ss["full_sync_complete"]:
+                        full_sync = 0
+
+                cluster = {
+                    "address": None,
+                    "entity_id": eid,
+                    "name": e.get("name"),
+                    "notes": e.get("notes"),
+                    "member_count": len(members),
+                    "members": members,
+                    "last_synced_at": last_synced,
+                    "full_sync_complete": full_sync,
+                    "realized_pnl_eth": e.get("realized_pnl_eth"),
+                    "total_trades": e.get("total_trades"),
+                    "win_rate": e.get("win_rate"),
+                    "collections_traded": e.get("collections_traded"),
+                    "computed_at": e.get("computed_at"),
+                    "open_positions": e.get("open_positions"),
+                    "avg_holding_secs": e.get("avg_holding_secs"),
+                    "total_buy_eth": e.get("total_buy_eth"),
+                    "wash_legs": e.get("wash_legs"),
+                    "wash_cost_eth": e.get("wash_cost_eth"),
+                }
+
+                if sell_from is not None or sell_until is not None:
+                    er = get_cached_entity_analytics(conn, eid)
+                    matched = [
+                        m for m in er.get("matched_trades", [])
+                        if (sell_from  is None or m["sell_ts"] >= sell_from)
+                        and (sell_until is None or m["sell_ts"] <= sell_until)
+                    ]
+                    cluster.update(_wallet_stats_from_matched(matched))
+
+                result.append(cluster)
+            else:
+                d["member_count"] = 1
+                if sell_from is not None or sell_until is not None:
+                    ar = get_cached_analytics(conn, d["address"])
+                    matched = [
+                        m for m in ar.get("matched_trades", [])
+                        if (sell_from  is None or m["sell_ts"] >= sell_from)
+                        and (sell_until is None or m["sell_ts"] <= sell_until)
+                    ]
+                    d.update(_wallet_stats_from_matched(matched))
+                result.append(d)
+
+    result.sort(key=lambda x: (
+        -(x["realized_pnl_eth"]) if x.get("realized_pnl_eth") is not None else float("inf"),
+        x.get("name") or ""
+    ))
     return jsonify(result)
+
+
+@app.route("/api/wallets/all")
+def api_wallets_all():
+    """All individual wallets with entity membership info. Used for cluster modal."""
+    db.init_db()
+    with db.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT address, name, entity_id FROM wallets ORDER BY name, address"
+        ).fetchall()
+        ents = {e["id"]: e["name"] for e in conn.execute(
+            "SELECT id, name FROM entities"
+        ).fetchall()}
+    return jsonify([{
+        "address": r["address"],
+        "name": r["name"],
+        "entity_id": r["entity_id"],
+        "entity_name": ents.get(r["entity_id"]) if r["entity_id"] else None,
+    } for r in rows])
 
 
 # ── API: report ────────────────────────────────────────────────────────────────
@@ -302,11 +413,295 @@ def api_wallet_update(address):
     return jsonify({"ok": True})
 
 
+# ── API: entity CRUD ───────────────────────────────────────────────────────────
+
+@app.route("/api/entities", methods=["POST"])
+def api_entities_create():
+    data = request.get_json() or {}
+    name = (data.get("name") or "").strip()
+    members = [a.lower() for a in (data.get("members") or [])]
+    notes = data.get("notes")
+    if not name:
+        return jsonify({"error": "name is required"}), 400
+    if not members:
+        return jsonify({"error": "at least one member wallet is required"}), 400
+    db.init_db()
+    with db.get_conn() as conn:
+        for addr in members:
+            w = db.get_wallet(conn, addr)
+            if not w:
+                return jsonify({"error": f"Wallet {addr} not found"}), 400
+            if w["entity_id"] is not None:
+                return jsonify({"error": f"Wallet {addr} already belongs to another entity"}), 400
+        entity_id = db.create_entity(conn, name, notes)
+        db.set_entity_members(conn, entity_id, members)
+        latest_ts = db.get_latest_trade_ts_multi(conn, members)
+        er = get_cached_entity_analytics(conn, entity_id)
+        if er and er.get("summary"):
+            db.upsert_entity_summary(conn, entity_id, er["summary"], latest_ts)
+    return jsonify({"id": entity_id}), 201
+
+
+@app.route("/api/entities/<int:entity_id>", methods=["PATCH"])
+def api_entity_update(entity_id):
+    data = request.get_json() or {}
+    name = data.get("name")
+    notes = data.get("notes")
+    members = data.get("members")
+    db.init_db()
+    with db.get_conn() as conn:
+        entity = db.get_entity(conn, entity_id)
+        if not entity:
+            return jsonify({"error": "Entity not found"}), 404
+        if members is not None:
+            members = [a.lower() for a in members]
+            if not members:
+                return jsonify({"error": "members cannot be empty; use DELETE to dissolve"}), 400
+            for addr in members:
+                w = db.get_wallet(conn, addr)
+                if not w:
+                    return jsonify({"error": f"Wallet {addr} not found"}), 400
+                if w["entity_id"] is not None and w["entity_id"] != entity_id:
+                    return jsonify({"error": f"Wallet {addr} already belongs to another entity"}), 400
+            db.set_entity_members(conn, entity_id, members)
+            _entity_cache.pop(entity_id, None)
+            latest_ts = db.get_latest_trade_ts_multi(conn, members)
+            er = get_cached_entity_analytics(conn, entity_id)
+            if er and er.get("summary"):
+                db.upsert_entity_summary(conn, entity_id, er["summary"], latest_ts)
+        if name is not None or notes is not None:
+            db.update_entity(conn, entity_id, name=name, notes=notes)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/entities/<int:entity_id>", methods=["DELETE"])
+def api_entity_delete(entity_id):
+    db.init_db()
+    with db.get_conn() as conn:
+        entity = db.get_entity(conn, entity_id)
+        if not entity:
+            return jsonify({"error": "Entity not found"}), 404
+        db.delete_entity(conn, entity_id)
+    _entity_cache.pop(entity_id, None)
+    return jsonify({"ok": True})
+
+
+# ── API: entity report ─────────────────────────────────────────────────────────
+
+@app.route("/api/report/entity/<int:entity_id>")
+def api_entity_report(entity_id):
+    since = request.args.get("since", type=int)
+    db.init_db()
+    with db.get_conn() as conn:
+        entity = db.get_entity(conn, entity_id)
+        if not entity:
+            return jsonify({"error": "Entity not found"}), 404
+        members = db.get_entity_members(conn, entity_id)
+        if not members:
+            return jsonify({"error": "Entity has no members"}), 404
+        member_rows = db.get_entity_member_rows(conn, entity_id)
+        trades = db.get_trades_multi(conn, members, since=since)
+        latest_trade_ts = db.get_latest_trade_ts_multi(conn, members)
+        if not trades:
+            msg = "No trades in this time range." if since else "No trades found. Sync member wallets first."
+            return jsonify({"error": msg}), 404
+        if since:
+            result = analytics.compute_entity_analytics(trades, set(members))
+        else:
+            result = get_cached_entity_analytics(conn, entity_id)
+            if result.get("summary"):
+                db.upsert_entity_summary(conn, entity_id, result["summary"], latest_trade_ts)
+        min_synced = None
+        for addr in members:
+            ss = db.get_sync_state(conn, addr)
+            if ss and ss["last_synced_at"]:
+                if min_synced is None or ss["last_synced_at"] < min_synced:
+                    min_synced = ss["last_synced_at"]
+
+    member_set = set(members)
+    clean_trades = [t for t in trades if not (
+        t["buyer_address"] in member_set and t["seller_address"] in member_set
+    )]
+    addr_to_slug = {}
+    for t in clean_trades:
+        if t["collection_slug"] and t["collection_address"]:
+            addr_to_slug[t["collection_address"]] = t["collection_slug"]
+    floor_data = {}
+    if addr_to_slug:
+        with db.get_conn() as conn2:
+            floor_data = db.get_cached_floors(conn2, list(addr_to_slug.values()))
+    player_card = analytics.compute_player_card(
+        clean_trades, result["per_collection"], result["summary"], floor_data,
+        result.get("open_positions")
+    )
+    per_col = {addr: {k: v for k, v in s.items() if k != "holding_times"}
+               for addr, s in result["per_collection"].items()}
+    return jsonify({
+        "wallet": {
+            "address": None,
+            "entity_id": entity_id,
+            "name": entity["name"],
+            "notes": entity["notes"],
+            "members": member_rows,
+        },
+        "summary": result["summary"],
+        "per_collection": per_col,
+        "open_positions": result.get("open_positions", {}),
+        "sync_state": {"last_synced_at": min_synced},
+        "filter_since": since,
+        "player_card": player_card,
+    })
+
+
+# ── API: entity trades ─────────────────────────────────────────────────────────
+
+@app.route("/api/trades/entity/<int:entity_id>")
+def api_entity_trades(entity_id):
+    since = request.args.get("since", type=int)
+    collection = request.args.get("collection", "").strip()
+    db.init_db()
+    with db.get_conn() as conn:
+        entity = db.get_entity(conn, entity_id)
+        if not entity:
+            return jsonify({"error": "Entity not found"}), 404
+        members = db.get_entity_members(conn, entity_id)
+        trades = db.get_trades_multi(conn, members, since=since)
+    member_set = set(members)
+    result = []
+    for t in reversed(trades):  # DESC by timestamp
+        d = dict(t)
+        if collection and d["collection_address"] != collection and d.get("collection_slug") != collection:
+            continue
+        d["is_wash"] = (
+            d.get("buyer_address") in member_set and
+            d.get("seller_address") in member_set
+        )
+        result.append(d)
+    return jsonify(result)
+
+
+# ── API: entity PnL buckets ────────────────────────────────────────────────────
+
+@app.route("/api/pnl_buckets/entity/<int:entity_id>")
+def api_entity_pnl_buckets(entity_id):
+    since = request.args.get("since", type=int, default=0)
+    db.init_db()
+    with db.get_conn() as conn:
+        entity = db.get_entity(conn, entity_id)
+        if not entity:
+            return jsonify({"error": "Entity not found"}), 404
+        members = db.get_entity_members(conn, entity_id)
+        if since:
+            trades = db.get_trades_multi(conn, members, since=since)
+            result = analytics.compute_entity_analytics(trades, set(members)) if trades else {}
+        else:
+            result = get_cached_entity_analytics(conn, entity_id)
+        sync_times = [db.get_sync_state(conn, m) for m in members]
+    if not result:
+        return jsonify({"buckets": [], "bucket_type": "daily", "total_pnl_eth": 0})
+    buckets_map = {}
+    for m in result.get("matched_trades", []):
+        _add_daily_bucket(buckets_map, m)
+    buckets = sorted(buckets_map.values(), key=lambda b: b["key"])
+    total_pnl = sum(b["pnl_eth"] for b in buckets)
+    synced_at = min((s["last_synced_at"] for s in sync_times if s and s["last_synced_at"]), default=None)
+    return jsonify({"buckets": buckets, "bucket_type": "daily",
+                    "total_pnl_eth": total_pnl, "synced_at": synced_at})
+
+
 # ── API: floor prices + unrealized PnL ────────────────────────────────────────
+
+def _fetch_floor_upnl(conn, open_positions: dict) -> dict:
+    """Fetch/cache floor prices and compute uPnL for an open_positions dict.
+
+    Returns the same payload shape as /api/floor responses.
+    """
+    import time as _time
+
+    slug_to_fee = {}
+    for buys in open_positions.values():
+        for b in buys:
+            slug = b.get("collection_slug")
+            if slug:
+                slug_to_fee[slug] = b.get("total_fee_bps") or 0
+
+    now = int(_time.time())
+    stale_threshold = now - db.FLOOR_CACHE_TTL_SECS
+    cached = db.get_cached_floors(conn, list(slug_to_fee.keys()))
+
+    stale_slugs = [
+        slug for slug in slug_to_fee
+        if slug not in cached
+        or cached[slug]["floor_fetched_at"] is None
+        or cached[slug]["floor_fetched_at"] < stale_threshold
+    ]
+
+    stale_set = set(stale_slugs)
+    floor_prices = {}
+    bid_prices = {}
+    for slug, row in cached.items():
+        if slug not in stale_set:
+            if row["floor_price_eth"] is not None:
+                floor_prices[slug] = row["floor_price_eth"]
+            if row["best_offer_eth"] is not None:
+                bid_prices[slug] = row["best_offer_eth"]
+
+    for slug in stale_slugs:
+        try:
+            fp = fetch.fetch_floor_price(slug)
+            bo = fetch.fetch_best_offer(slug)
+            _time.sleep(0.25)
+            db.upsert_collection_floor(conn, slug, fp, bo, now)
+            if fp is not None:
+                floor_prices[slug] = fp
+            if bo is not None:
+                bid_prices[slug] = bo
+        except Exception:
+            stale_row = cached.get(slug)
+            if stale_row:
+                if stale_row["floor_price_eth"] is not None:
+                    floor_prices[slug] = stale_row["floor_price_eth"]
+                if stale_row["best_offer_eth"] is not None:
+                    bid_prices[slug] = stale_row["best_offer_eth"]
+
+    total_cost = 0.0
+    total_floor_net = 0.0
+    total_bid_net = 0.0
+    positions_with_floor = 0
+    positions_with_bid = 0
+
+    for buys in open_positions.values():
+        for b in buys:
+            cost = b["eth_amount"] + (b.get("gas_eth") or 0)
+            total_cost += cost
+            slug = b.get("collection_slug")
+            fee_bps = b.get("total_fee_bps") or 0
+            floor = floor_prices.get(slug) if slug else None
+            if floor is not None:
+                total_floor_net += floor * (1 - fee_bps / 10000)
+                positions_with_floor += 1
+            bid = bid_prices.get(slug) if slug else None
+            if bid is not None:
+                total_bid_net += bid * (1 - fee_bps / 10000)
+                positions_with_bid += 1
+
+    upnl = (total_floor_net - total_cost) if positions_with_floor else None
+    upnl_bid = (total_bid_net - total_cost) if positions_with_bid else None
+    return {
+        "upnl_eth": upnl,
+        "upnl_bid_eth": upnl_bid,
+        "floor_value_eth": total_floor_net if positions_with_floor else None,
+        "bid_value_eth": total_bid_net if positions_with_bid else None,
+        "cost_basis_eth": total_cost,
+        "floor_prices": floor_prices,
+        "positions_with_floor": positions_with_floor,
+        "positions_with_bid": positions_with_bid,
+        "total_open": sum(len(v) for v in open_positions.values()),
+    }
+
 
 @app.route("/api/floor/<address>")
 def api_floor(address):
-    import time as _time
     address = address.lower()
     db.init_db()
     with db.get_conn() as conn:
@@ -338,92 +733,49 @@ def api_floor(address):
                             "cost_basis_eth": 0, "floor_prices": {},
                             "transferred_away": True})
 
-        # Collect unique slugs across all open buys
-        slug_to_fee = {}
-        for buys in open_positions.values():
-            for b in buys:
-                slug = b.get("collection_slug")
-                if slug:
-                    slug_to_fee[slug] = b.get("total_fee_bps") or 0
+        return jsonify(_fetch_floor_upnl(conn, open_positions))
 
-        now = int(_time.time())
-        stale_threshold = now - db.FLOOR_CACHE_TTL_SECS
-        cached = db.get_cached_floors(conn, list(slug_to_fee.keys()))
 
-        floor_prices = {}
-        stale_slugs = [
-            slug for slug in slug_to_fee
-            if slug not in cached
-            or cached[slug]["floor_fetched_at"] is None
-            or cached[slug]["floor_fetched_at"] < stale_threshold
-        ]
+@app.route("/api/floor/entity/<int:entity_id>")
+def api_floor_entity(entity_id):
+    db.init_db()
+    with db.get_conn() as conn:
+        entity = db.get_entity(conn, entity_id)
+        if not entity:
+            return jsonify({"error": "Entity not found"}), 404
+        members = db.get_entity_members(conn, entity_id)
+        if not members:
+            return jsonify({"error": "Entity has no members"}), 404
 
-        # Populate floor_prices and bid_prices from cache for fresh slugs
-        stale_set = set(stale_slugs)
-        floor_prices = {}
-        bid_prices = {}
-        for slug, row in cached.items():
-            if slug not in stale_set:
-                if row["floor_price_eth"] is not None:
-                    floor_prices[slug] = row["floor_price_eth"]
-                if row["best_offer_eth"] is not None:
-                    bid_prices[slug] = row["best_offer_eth"]
+        result = get_cached_entity_analytics(conn, entity_id)
+        open_positions = result.get("open_positions", {})
 
-        # Fetch only stale/missing slugs from OpenSea
-        for slug in stale_slugs:
+        if not open_positions:
+            return jsonify({"upnl_eth": None, "floor_value_eth": None,
+                            "cost_basis_eth": 0, "floor_prices": {}})
+
+        # Build union of all held NFTs across members.
+        held_nfts: set = set()
+        fetch_failed = False
+        for addr in members:
             try:
-                fp = fetch.fetch_floor_price(slug)
-                bo = fetch.fetch_best_offer(slug)
-                _time.sleep(0.25)
-                db.upsert_collection_floor(conn, slug, fp, bo, now)
-                if fp is not None:
-                    floor_prices[slug] = fp
-                if bo is not None:
-                    bid_prices[slug] = bo
-            except Exception:
-                stale_row = cached.get(slug)
-                if stale_row:
-                    if stale_row["floor_price_eth"] is not None:
-                        floor_prices[slug] = stale_row["floor_price_eth"]
-                    if stale_row["best_offer_eth"] is not None:
-                        bid_prices[slug] = stale_row["best_offer_eth"]
+                held_nfts |= fetch.fetch_wallet_nfts(addr)
+            except Exception as e:
+                log.warning("Could not fetch holdings for %s: %s", addr, e)
+                fetch_failed = True
 
-        # Compute totals
-        total_cost = 0.0
-        total_floor_net = 0.0
-        total_bid_net = 0.0
-        positions_with_floor = 0
-        positions_with_bid = 0
+        if not fetch_failed:
+            open_positions = {
+                k: buys for k, buys in open_positions.items()
+                if (k.split(":", 1)[0], k.split(":", 1)[1]) in held_nfts
+            }
 
-        for buys in open_positions.values():
-            for b in buys:
-                cost = b["eth_amount"] + (b.get("gas_eth") or 0)
-                total_cost += cost
-                slug = b.get("collection_slug")
-                fee_bps = b.get("total_fee_bps") or 0
-                floor = floor_prices.get(slug) if slug else None
-                if floor is not None:
-                    total_floor_net += floor * (1 - fee_bps / 10000)
-                    positions_with_floor += 1
-                bid = bid_prices.get(slug) if slug else None
-                if bid is not None:
-                    total_bid_net += bid * (1 - fee_bps / 10000)
-                    positions_with_bid += 1
+        if not open_positions:
+            return jsonify({"upnl_eth": None, "floor_value_eth": None,
+                            "cost_basis_eth": 0, "floor_prices": {},
+                            "transferred_away": True})
 
-        upnl = (total_floor_net - total_cost) if positions_with_floor else None
-        upnl_bid = (total_bid_net - total_cost) if positions_with_bid else None
-
-        return jsonify({
-            "upnl_eth": upnl,
-            "upnl_bid_eth": upnl_bid,
-            "floor_value_eth": total_floor_net if positions_with_floor else None,
-            "bid_value_eth": total_bid_net if positions_with_bid else None,
-            "cost_basis_eth": total_cost,
-            "floor_prices": floor_prices,
-            "positions_with_floor": positions_with_floor,
-            "positions_with_bid": positions_with_bid,
-            "total_open": sum(len(v) for v in open_positions.values()),
-        })
+        return jsonify(_fetch_floor_upnl(conn, open_positions))
 
 
 # ── API: meta analysis (cross-wallet collection stats, per time window) ────────
@@ -448,6 +800,7 @@ _meta_cache = {"key": None, "expires": 0.0, "payload": None}
 # Memory: ~23 wallets x full matched-trade/open-position dicts is tens of MB —
 # fine for a local single-user tool.
 _wallet_cache = {}  # wallet -> {"fp": (...), "result": analytics_dict}
+_entity_cache = {}  # entity_id -> {"fp": (...), "result": analytics_dict}
 
 
 def get_cached_analytics(conn, wallet):
@@ -475,6 +828,30 @@ def get_cached_analytics(conn, wallet):
     # Flask runs threaded: dict assignment is atomic; worst case two threads
     # compute the same wallet concurrently once. No lock needed.
     _wallet_cache[wallet] = {"fp": fp, "result": result}
+    return result
+
+
+def get_cached_entity_analytics(conn, entity_id):
+    """Full-history entity analytics, cached. Fingerprint includes sorted member list."""
+    members = db.get_entity_members(conn, entity_id)
+    if not members:
+        return analytics.compute_entity_analytics([], set())
+    members_fp = tuple(sorted(members))
+    ph = ",".join("?" * len(members))
+    trades_fp = tuple(conn.execute(
+        f"SELECT COUNT(*), COALESCE(MAX(id), 0), TOTAL(gas_eth) FROM trades WHERE wallet_address IN ({ph})",
+        members
+    ).fetchone())
+    cols_fp = tuple(conn.execute(
+        "SELECT COUNT(*), COALESCE(MAX(fetched_at), 0), TOTAL(total_fee_bps) FROM collections"
+    ).fetchone())
+    fp = (members_fp,) + trades_fp + cols_fp
+    hit = _entity_cache.get(entity_id)
+    if hit and hit["fp"] == fp:
+        return hit["result"]
+    trades = db.get_trades_multi(conn, members)
+    result = analytics.compute_entity_analytics(trades, set(members))
+    _entity_cache[entity_id] = {"fp": fp, "result": result}
     return result
 
 

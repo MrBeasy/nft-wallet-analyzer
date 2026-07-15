@@ -334,6 +334,7 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
     </nav>
   </div>
   <div>
+    <button class="btn btn-outline" onclick="openClusterModal(null)" style="margin-right:6px">+ New Cluster</button>
     <button class="btn btn-primary" onclick="openAddModal()">+ Add Wallet</button>
   </div>
 </header>
@@ -421,7 +422,7 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
         <span id="notes-saved" class="notes-saved">Saved ✓</span>
       </div>
     </div>
-    <div class="d-actions">
+    <div class="d-actions" id="d-actions">
       <span id="d-synced" class="d-synced"></span>
       <button class="btn btn-outline" onclick="resync()">⟳ Sync</button>
     </div>
@@ -846,6 +847,35 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
   <button class="btn btn-outline" style="padding:3px 10px;font-size:12px" onclick="showSyncModal()">Show</button>
 </div>
 
+<!-- ── Cluster modal ── -->
+<div id="m-cluster" class="moverlay" style="display:none" onclick="overlayClick(event,'m-cluster')">
+  <div class="modal modal-sm" onclick="event.stopPropagation()">
+    <div class="modal-hdr">
+      <h3 id="cluster-modal-title">New Cluster</h3>
+      <button class="btn-close" onclick="closeModal('m-cluster')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="fg">
+        <label class="flbl">Cluster Name</label>
+        <input id="cluster-name" type="text" class="finp" placeholder="e.g. Team Alpha" autocomplete="off">
+      </div>
+      <div class="fg">
+        <label class="flbl">Notes</label>
+        <textarea id="cluster-notes" class="finp" rows="2" placeholder="Optional notes" style="resize:vertical"></textarea>
+      </div>
+      <div class="fg">
+        <label class="flbl">Member Wallets</label>
+        <div id="cluster-members" style="max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:4px;padding:6px"></div>
+      </div>
+      <div id="cluster-err" style="color:var(--red);font-size:12px;display:none;margin-top:4px"></div>
+    </div>
+    <div class="modal-foot" style="gap:8px">
+      <button id="cluster-dissolve-btn" class="btn btn-ghost" style="display:none" onclick="dissolveCluster()">Dissolve</button>
+      <button class="btn btn-primary btn-full" onclick="saveCluster()">Save Cluster</button>
+    </div>
+  </div>
+</div>
+
 <!-- ── Wallet × Collection detail modal ── -->
 <div id="m-col" class="moverlay" style="display:none" onclick="overlayClick(event,'m-col')">
   <div class="modal modal-lg" onclick="event.stopPropagation()">
@@ -884,6 +914,8 @@ let currentWallet = null;
 let syncTarget = null;
 let syncAutoNavigate = false;
 let syncRunning = false;
+let entitySyncActive = false;
+let clusterEditId = null;
 let reportCache = {};
 const floorCache = {};     // {address: floor_prices} from /api/floor, keyed by slug
 let tradesLoaded = false;
@@ -914,12 +946,16 @@ let benchmarkCache = null;
 
 function navigate(path) { window.location.hash = path; }
 
+function isEntity() { return typeof currentWallet === 'string' && currentWallet.startsWith('entity/'); }
+
 window.addEventListener('hashchange', router);
 window.addEventListener('DOMContentLoaded', router);
 
 function router() {
   const h = window.location.hash || '#/';
-  if (h.startsWith('#/wallet/')) {
+  if (h.startsWith('#/entity/')) {
+    loadDetail('entity/' + h.slice(9));
+  } else if (h.startsWith('#/wallet/')) {
     loadDetail(h.slice(9));
   } else if (h.startsWith('#/collection/')) {
     loadCollection(h.slice(13));
@@ -1053,8 +1089,12 @@ function renderWalletTable(wallets) {
 
 function renderWalletRow(row) {
   const [,pnl, roi, wr, trades, cols, open, avgHold, spent, lastTs, w] = row;
+  const isCluster = w.entity_id != null;
   const addr     = w.address || '';
-  const name     = esc(w.name || addr.slice(0,8)+'...'+addr.slice(-4));
+  const displayName = w.name || (isCluster ? 'Cluster #' + w.entity_id : addr.slice(0,8)+'...'+addr.slice(-4));
+  const memberBadge = isCluster && w.member_count ? ` <span style="font-size:10px;color:var(--muted);border:1px solid var(--border);border-radius:3px;padding:0 4px">${w.member_count}w</span>` : '';
+  const nameCell = esc(displayName) + memberBadge;
+  const navTarget = isCluster ? `/entity/${w.entity_id}` : `/wallet/${esc(addr)}`;
   const pnlCls   = pnl  > 0 ? 'pos' : pnl  < 0 ? 'neg' : '';
   const roiCls   = roi  > 0 ? 'pos' : roi  < 0 ? 'neg' : '';
   const wrCls    = wr  != null && wr >= 50 ? 'pos' : '';
@@ -1062,8 +1102,8 @@ function renderWalletRow(row) {
   const wrTxt    = wr   != null ? wr.toFixed(1) + '%' : '—';
   const pnlTxt   = pnl  != null ? (pnl  >= 0 ? '+' : '') + pnl.toFixed(4)  + ' ETH' : '—';
   const spentTxt = spent != null ? spent.toFixed(4) + ' ETH' : '—';
-  return `<tr class="clickable" onclick="navigate('/wallet/${esc(addr)}')">
-    <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(w.name||addr)}">${name}</td>
+  return `<tr class="clickable" onclick="navigate('${navTarget}')">
+    <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(displayName)}">${nameCell}</td>
     <td class="mono tr pnl-cell ${pnlCls}">${pnlTxt}</td>
     <td class="mono tr pnl-cell ${roiCls}">${roiTxt}</td>
     <td class="tc ${wrCls}">${wrTxt}</td>
@@ -1217,7 +1257,10 @@ async function fetchAndRenderDetail(address, days) {
   const since = days > 0 ? Math.floor(Date.now() / 1000) - days * 86400 : 0;
   const loader = document.getElementById('d-loader');
   try {
-    const url = `/api/report/${address}${since ? '?since=' + since : ''}`;
+    const isEnt = address.startsWith('entity/');
+    const url = isEnt
+      ? `/api/report/${address}${since ? '?since=' + since : ''}`
+      : `/api/report/${address}${since ? '?since=' + since : ''}`;
     const res = await fetch(url);
     if (!res.ok) {
       const e = await res.json().catch(() => ({error: 'Unknown error'}));
@@ -1281,10 +1324,35 @@ function renderDetail(data) {
   document.getElementById('d-loader').style.display = 'none';
   document.getElementById('d-content').style.display = '';
 
-  document.getElementById('d-name').textContent = data.wallet.name || 'Unnamed Wallet';
-  document.getElementById('d-addr').textContent = data.wallet.address;
+  const wallet = data.wallet;
+  document.getElementById('d-name').textContent = wallet.name || 'Unnamed Wallet';
+
+  const addrEl = document.getElementById('d-addr');
+  if (wallet.entity_id != null) {
+    // Entity: show member chips instead of a single address
+    const chips = (wallet.members || []).map(m =>
+      `<span class="mono" style="font-size:11px;background:var(--surface2);border-radius:3px;padding:1px 5px;margin-right:4px" title="${esc(m.name||m.address)}">${esc((m.name||m.address).slice(0,10)+'…')}</span>`
+    ).join('');
+    addrEl.innerHTML = chips || '<span style="color:var(--muted)">No members</span>';
+
+    // Inject Edit Cluster button next to Sync
+    const actionsEl = document.getElementById('d-actions');
+    if (actionsEl && !actionsEl.querySelector('.edit-cluster-btn')) {
+      const editBtn = document.createElement('button');
+      editBtn.className = 'btn btn-outline edit-cluster-btn';
+      editBtn.textContent = 'Edit Cluster';
+      editBtn.onclick = () => openClusterModal(wallet.entity_id);
+      actionsEl.insertBefore(editBtn, actionsEl.firstChild);
+    }
+  } else {
+    addrEl.textContent = wallet.address || '';
+    // Remove edit cluster button if present from a previous entity view
+    const prev = document.querySelector('.edit-cluster-btn');
+    if (prev) prev.remove();
+  }
+
   const notesEl = document.getElementById('d-notes');
-  notesEl.value = data.wallet.notes || '';
+  notesEl.value = wallet.notes || '';
   autoResizeNotes(notesEl);
 
   const syncEl = document.getElementById('d-synced');
@@ -1303,7 +1371,7 @@ function renderDetail(data) {
   renderOpenPane(data);
 
   if (data.summary.open_positions > 0) {
-    fetchFloorData(data.wallet.address);
+    fetchFloorData(currentWallet);
   }
   loadPnlPane();
 }
@@ -1462,6 +1530,9 @@ function renderSummary(s) {
     { lbl:'Total Spent',       val: s.total_buy_eth.toFixed(4) + ' ETH' },
     { lbl:'Fees Paid',         val: s.total_fees_eth.toFixed(4) + ' ETH' },
   ];
+  if (s.wash_legs > 0) {
+    cards.push({ lbl:'Wash Trades', val: s.wash_legs + ' legs · ' + (s.wash_cost_eth||0).toFixed(4) + ' ETH cost', cls:'neg' });
+  }
   document.getElementById('sum-grid').innerHTML = cards.map(c =>
     `<div class="sc"><div class="sc-lbl">${c.lbl}</div><div class="sc-val ${c.cls||''}" ${c.id ? `id="${c.id}"` : ''}>${c.val}</div></div>`
   ).join('');
@@ -1478,7 +1549,7 @@ function renderCollectionsPane(data) {
 
   // Per-collection uPnL from open positions × cached floor prices (null until
   // /api/floor responds and for positions whose slug has no floor price).
-  const floors = floorCache[data.wallet.address];
+  const floors = floorCache[currentWallet];
   const upnlByCol = {};
   if (floors) {
     for (const [key, buys] of Object.entries(data.open_positions || {})) {
@@ -1624,7 +1695,8 @@ async function loadTradesPane() {
     const trades = await fetch(url).then(r => r.json());
     loader.style.display = 'none';
     inner.style.display = '';
-    renderTradesTable('trades-inner', 'all-trades', trades);
+    const opts = isEntity() ? { showWallet: true } : {};
+    renderTradesTable('trades-inner', 'all-trades', trades, opts);
   } catch {
     loader.innerHTML = '<p style="color:var(--muted);text-align:center">Failed to load trades.</p>';
   }
@@ -1973,11 +2045,11 @@ function renderPnlChart(data, { loaderId = 'pnl-loader', innerId = 'pnl-inner', 
   drawMain();
 }
 
-function renderTradesTable(containerId, tableId, trades) {
+function renderTradesTable(containerId, tableId, trades, opts = {}) {
   const el = document.getElementById(containerId);
   if (!trades.length) { el.innerHTML = '<div class="no-data">No trades found.</div>'; return; }
 
-  // rows: [ts, side, ethAmt, gasEth, colName, nftId, txHash]
+  // rows: [ts, side, ethAmt, gasEth, colName, nftId, txHash, fullObj]
   const rows = trades.map(t => [
     t.block_timestamp,
     t.side,
@@ -1986,21 +2058,26 @@ function renderTradesTable(containerId, tableId, trades) {
     (t.collection_name || t.collection_slug || t.collection_address || '').toLowerCase(),
     t.nft_id,
     t.tx_hash,
-    t,  // [7] full obj
+    t,
   ]);
+
+  const headers = opts.showWallet
+    ? ['Date','Side','ETH','Gas ETH','Collection','NFT ID','Wallet','Tx']
+    : ['Date','Side','ETH','Gas ETH','Collection','NFT ID','Tx'];
+  const renderer = opts.showWallet ? makeEntityTradeRenderer() : renderTradeRow;
 
   el.innerHTML = `
     <div class="tab-hdr"><span class="badge">${trades.length} trades</span></div>
     <div class="tbl-wrap">
       <table id="tbl-${tableId}">
         <thead><tr>
-          ${makeHeaders(tableId, ['Date','Side','ETH','Gas ETH','Collection','NFT ID','Tx'], 0, -1)}
+          ${makeHeaders(tableId, headers, 0, -1)}
         </tr></thead>
         <tbody></tbody>
       </table>
     </div>`;
 
-  initTable(tableId, rows, renderTradeRow, 0, -1);
+  initTable(tableId, rows, renderer, 0, -1);
 }
 
 function renderTradeRow(row) {
@@ -2017,6 +2094,28 @@ function renderTradeRow(row) {
     <td class="mono">${esc(nftId)}</td>
     <td><a href="https://etherscan.io/tx/${esc(txHash)}" target="_blank" class="tx-lnk">${txShort}</a></td>
   </tr>`;
+}
+
+function makeEntityTradeRenderer() {
+  return function(row) {
+    const [ts, side,,,, nftId, txHash, t] = row;
+    const colName = esc((t.collection_name || t.collection_slug || t.collection_address || '').slice(0,24));
+    const sideCls = side === 'buy' ? 'badge-buy' : 'badge-sell';
+    const txShort = txHash ? txHash.slice(0,10)+'...' : '';
+    const walletAddr = (t.wallet_address || '');
+    const walletShort = walletAddr ? walletAddr.slice(0,6)+'…'+walletAddr.slice(-4) : '—';
+    const washStyle = t.is_wash ? ' style="opacity:0.5" title="Wash trade (excluded from PnL)"' : '';
+    return `<tr${washStyle}>
+      <td>${fmtDate(ts)}</td>
+      <td><span class="${sideCls}">${side.toUpperCase()}</span></td>
+      <td class="mono tr">${t.eth_amount.toFixed(4)}</td>
+      <td class="mono tr">${(t.gas_eth||0).toFixed(5)}</td>
+      <td>${colName}</td>
+      <td class="mono">${esc(nftId)}</td>
+      <td class="mono" style="font-size:11px">${esc(walletShort)}</td>
+      <td><a href="https://etherscan.io/tx/${esc(txHash)}" target="_blank" class="tx-lnk">${txShort}</a></td>
+    </tr>`;
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2466,9 +2565,12 @@ function openAddModal() {
   hideSyncToast();
   syncTarget = null;
   syncAutoNavigate = true;
+  entitySyncActive = false;
   document.getElementById('m-add-form').style.display = '';
   document.getElementById('m-add-progress').style.display = 'none';
-  document.getElementById('prog-foot').style.display = 'none';
+  const progFoot = document.getElementById('prog-foot');
+  progFoot.style.display = 'none';
+  progFoot.innerHTML = '<button class="btn btn-primary btn-full" onclick="goToSynced()">View Report →</button>';
   document.getElementById('f-name').value = '';
   document.getElementById('f-addr').value = '';
   document.getElementById('f-addr').readOnly = false;
@@ -2479,6 +2581,13 @@ function openAddModal() {
 
 function resync() {
   if (!currentWallet) return;
+  if (isEntity()) {
+    const rep = reportCache[currentWallet + ':' + detailDays];
+    const members = rep?.wallet?.members?.map(m => m.address) || [];
+    if (!members.length) { alert('No member addresses found. Load the report first.'); return; }
+    runEntitySync(currentWallet, members);
+    return;
+  }
   syncTarget = currentWallet;
   syncAutoNavigate = true;
   document.getElementById('m-add-form').style.display = '';
@@ -2554,15 +2663,17 @@ async function runSync(address, name) {
               syncTarget = ev.address;
               Object.keys(reportCache).filter(k => k.startsWith(ev.address + ':')).forEach(k => delete reportCache[k]);
               walletCache = null;
-              const isMinimized = document.getElementById('sync-toast').style.display !== 'none';
-              hideSyncToast();
-              if (isMinimized) {
-                closeModal('m-add');
-                navigate(`/wallet/${syncTarget}`);
-              } else if (syncAutoNavigate) {
-                setTimeout(() => { closeModal('m-add'); navigate(`/wallet/${syncTarget}`); }, 600);
-              } else {
-                document.getElementById('prog-foot').style.display = '';
+              if (!entitySyncActive) {
+                const isMinimized = document.getElementById('sync-toast').style.display !== 'none';
+                hideSyncToast();
+                if (isMinimized) {
+                  closeModal('m-add');
+                  navigate(`/wallet/${syncTarget}`);
+                } else if (syncAutoNavigate) {
+                  setTimeout(() => { closeModal('m-add'); navigate(`/wallet/${syncTarget}`); }, 600);
+                } else {
+                  document.getElementById('prog-foot').style.display = '';
+                }
               }
             } else if (ev.type === 'error') {
               syncRunning = false;
@@ -2592,9 +2703,46 @@ function appendLog(msg, cls) {
 function goToSynced() {
   closeModal('m-add');
   if (syncTarget) {
-    // refresh home wallets cache & navigate
     loadHome().then(() => navigate(`/wallet/${syncTarget}`));
   }
+}
+
+function goToEntitySynced(entityKey) {
+  closeModal('m-add');
+  const entityId = entityKey.startsWith('entity/') ? entityKey.slice(7) : entityKey;
+  loadHome().then(() => navigate('/entity/' + entityId));
+}
+
+async function runEntitySync(entityKey, members) {
+  entitySyncActive = true;
+  syncAutoNavigate = false;
+
+  // Invalidate all entity report cache entries
+  Object.keys(reportCache).filter(k => k.startsWith(entityKey + ':')).forEach(k => delete reportCache[k]);
+  walletCache = null;
+
+  document.getElementById('m-add-form').style.display = 'none';
+  document.getElementById('m-add-progress').style.display = '';
+  document.getElementById('sync-log').innerHTML = '';
+  document.getElementById('prog-title').innerHTML = 'Syncing cluster<span id="prog-dots">...</span>';
+  const progFoot = document.getElementById('prog-foot');
+  progFoot.style.display = 'none';
+  progFoot.innerHTML = `<button class="btn btn-primary btn-full" onclick="goToEntitySynced('${esc(entityKey)}')">View Report →</button>`;
+  document.getElementById('m-add').style.display = '';
+
+  for (let i = 0; i < members.length; i++) {
+    const addr = members[i];
+    if (i > 0) appendLog('─────────────────', 'ok');
+    appendLog(`Member ${i + 1}/${members.length}: ${addr.slice(0,8)}…${addr.slice(-4)}`, 'ok');
+    await runSync(addr, '');
+    // Clear individual wallet report cache
+    Object.keys(reportCache).filter(k => k.startsWith(addr + ':')).forEach(k => delete reportCache[k]);
+  }
+
+  entitySyncActive = false;
+  document.getElementById('prog-title').textContent = 'Cluster sync done!';
+  hideSyncToast();
+  progFoot.style.display = '';
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2700,14 +2848,16 @@ async function saveNotes() {
   if (!currentWallet) return;
   const notes = document.getElementById('d-notes').value;
 
-  // Update cache so navigating back doesn't revert
   const notesCacheKey = currentWallet + ':' + detailDays;
   if (reportCache[notesCacheKey]) {
     reportCache[notesCacheKey].wallet.notes = notes;
   }
 
   try {
-    await fetch(`/api/wallet/${currentWallet}`, {
+    const url = isEntity()
+      ? `/api/entities/${currentWallet.slice(7)}`
+      : `/api/wallet/${currentWallet}`;
+    await fetch(url, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ notes }),
@@ -2722,15 +2872,18 @@ async function saveNotes() {
 // Floor prices / unrealized PnL (async)
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function fetchFloorData(address) {
+async function fetchFloorData(walletKey) {
+  const url = walletKey.startsWith('entity/')
+    ? `/api/floor/${walletKey}`
+    : `/api/floor/${walletKey}`;
   try {
-    const data = await fetch(`/api/floor/${address}`).then(r => r.json());
+    const data = await fetch(url).then(r => r.json());
 
     // Cache floors and refresh the collections table so its uPnL column fills in
     if (data.floor_prices && Object.keys(data.floor_prices).length) {
-      floorCache[address] = data.floor_prices;
-      const rep = reportCache[currentWallet + ':' + detailDays];
-      if (rep && rep.wallet.address === address) renderCollectionsPane(rep);
+      floorCache[walletKey] = data.floor_prices;
+      const rep = reportCache[walletKey + ':' + detailDays];
+      if (rep && currentWallet === walletKey) renderCollectionsPane(rep);
     }
 
     const elFloor = document.getElementById('sc-upnl');
@@ -4098,6 +4251,137 @@ function ctRenderSpreadRow(row) {
     <td class="mono tr">${c.best_offer_eth  != null ? c.best_offer_eth.toFixed(4)  : '—'}</td>
     <td class="tc">${c.spread_pair_count ?? '—'}</td>
   </tr>`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Cluster modal
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function openClusterModal(entityId) {
+  clusterEditId = entityId;
+  document.getElementById('cluster-modal-title').textContent = entityId ? 'Edit Cluster' : 'New Cluster';
+  document.getElementById('cluster-name').value = '';
+  document.getElementById('cluster-notes').value = '';
+  document.getElementById('cluster-err').style.display = 'none';
+  document.getElementById('cluster-dissolve-btn').style.display = entityId ? '' : 'none';
+  document.getElementById('cluster-members').innerHTML = '<div style="color:var(--muted);font-size:12px">Loading wallets…</div>';
+  document.getElementById('m-cluster').style.display = '';
+
+  let allWallets = [];
+  try {
+    allWallets = await fetch('/api/wallets/all').then(r => r.json());
+  } catch {
+    document.getElementById('cluster-members').innerHTML = '<div style="color:var(--red);font-size:12px">Failed to load wallets.</div>';
+    return;
+  }
+
+  let currentMembers = new Set();
+  if (entityId) {
+    const rep = reportCache[`entity/${entityId}:0`];
+    if (rep?.wallet?.members) {
+      rep.wallet.members.forEach(m => currentMembers.add(m.address.toLowerCase()));
+      document.getElementById('cluster-name').value = rep.wallet.name || '';
+      document.getElementById('cluster-notes').value = rep.wallet.notes || '';
+    } else {
+      try {
+        const ent = await fetch(`/api/report/entity/${entityId}`).then(r => r.json());
+        if (ent.wallet) {
+          (ent.wallet.members || []).forEach(m => currentMembers.add(m.address.toLowerCase()));
+          document.getElementById('cluster-name').value = ent.wallet.name || '';
+          document.getElementById('cluster-notes').value = ent.wallet.notes || '';
+        }
+      } catch {}
+    }
+  }
+
+  const membersDiv = document.getElementById('cluster-members');
+  if (!allWallets.length) {
+    membersDiv.innerHTML = '<div style="color:var(--muted);font-size:12px">No wallets added yet.</div>';
+    return;
+  }
+
+  membersDiv.innerHTML = allWallets.map(w => {
+    const inOtherCluster = w.entity_id != null && w.entity_id !== entityId;
+    const checked = currentMembers.has(w.address.toLowerCase());
+    const label = esc(w.name || w.address);
+    const sub = esc(w.address.slice(0,8) + '…' + w.address.slice(-4));
+    const disabledAttr = inOtherCluster ? ' disabled' : '';
+    const disabledStyle = inOtherCluster ? ' style="opacity:0.45" title="Already in another cluster"' : '';
+    return `<label class="cluster-member-row"${disabledStyle} style="display:flex;align-items:center;gap:8px;padding:4px 0;cursor:${inOtherCluster?'default':'pointer'}">
+      <input type="checkbox" value="${esc(w.address)}"${checked ? ' checked' : ''}${disabledAttr} style="margin:0">
+      <span>
+        <span style="font-weight:500">${label}</span>
+        <span class="mono" style="font-size:11px;color:var(--muted);margin-left:4px">${sub}</span>
+        ${inOtherCluster ? `<span style="font-size:10px;color:var(--muted)"> · in ${esc(w.entity_name||'cluster')}</span>` : ''}
+      </span>
+    </label>`;
+  }).join('');
+}
+
+async function saveCluster() {
+  const name = document.getElementById('cluster-name').value.trim();
+  const notes = document.getElementById('cluster-notes').value.trim();
+  const checked = [...document.querySelectorAll('#cluster-members input[type=checkbox]:checked')];
+  const members = checked.map(c => c.value.toLowerCase());
+  const errEl = document.getElementById('cluster-err');
+
+  if (!name) { errEl.textContent = 'Cluster name is required.'; errEl.style.display = ''; return; }
+  if (!members.length) { errEl.textContent = 'Select at least one member wallet.'; errEl.style.display = ''; return; }
+  errEl.style.display = 'none';
+
+  try {
+    if (clusterEditId) {
+      const res = await fetch(`/api/entities/${clusterEditId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, notes, members }),
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        errEl.textContent = e.error || 'Save failed.';
+        errEl.style.display = '';
+        return;
+      }
+      // Invalidate cache for this entity
+      Object.keys(reportCache).filter(k => k.startsWith(`entity/${clusterEditId}:`)).forEach(k => delete reportCache[k]);
+    } else {
+      const res = await fetch('/api/entities', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, notes, members }),
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        errEl.textContent = e.error || 'Save failed.';
+        errEl.style.display = '';
+        return;
+      }
+      const { id } = await res.json();
+      clusterEditId = id;
+    }
+    walletCache = null;
+    closeModal('m-cluster');
+    await loadHome();
+    navigate('/entity/' + clusterEditId);
+  } catch (e) {
+    errEl.textContent = 'Network error.';
+    errEl.style.display = '';
+  }
+}
+
+async function dissolveCluster() {
+  if (!clusterEditId) return;
+  if (!confirm('Dissolve this cluster? Member wallets are kept; only the cluster grouping is removed.')) return;
+  try {
+    await fetch(`/api/entities/${clusterEditId}`, { method: 'DELETE' });
+    walletCache = null;
+    closeModal('m-cluster');
+    navigate('/wallets');
+    await loadHome();
+  } catch {
+    document.getElementById('cluster-err').textContent = 'Delete failed.';
+    document.getElementById('cluster-err').style.display = '';
+  }
 }
 </script>
 </body>

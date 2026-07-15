@@ -381,6 +381,52 @@ def compute_player_card(trades, per_collection, summary, floor_data, open_positi
     }
 
 
+# ── Entity analytics (wallet clusters) ────────────────────────────────────────
+
+def split_wash_trades(trades: list, members: set) -> tuple:
+    """Split into (clean, wash) where wash rows have both buyer and seller in members."""
+    clean, wash = [], []
+    for t in trades:
+        if t.get("buyer_address") in members and t.get("seller_address") in members:
+            wash.append(t)
+        else:
+            clean.append(t)
+    return clean, wash
+
+
+def compute_entity_analytics(trades: list, members: set) -> dict:
+    """FIFO analytics for a wallet cluster with wash trades surfaced as explicit cost."""
+    clean, wash = split_wash_trades([dict(t) for t in trades], members)
+    result = compute_analytics(clean)
+    wash_gas  = sum(w.get("gas_eth") or 0 for w in wash)
+    wash_fees = sum(w["eth_amount"] * (w.get("total_fee_bps") or 0) / 10000
+                    for w in wash if w["side"] == "sell")
+    wash_cost = wash_gas + wash_fees
+    if not result:
+        return {
+            "summary": {
+                "total_trades": 0, "total_buys": 0, "total_sells": 0,
+                "total_buy_eth": 0.0, "total_sell_eth": 0.0,
+                "total_gas_eth": wash_gas, "total_fees_eth": wash_fees,
+                "realized_pnl_eth": -wash_cost,
+                "unmatched_sells": 0, "unmatched_sell_eth": 0.0, "unmatched_fees_eth": 0.0,
+                "open_positions": 0, "open_cost_basis_eth": 0.0,
+                "win_rate": 0.0, "roi": 0.0,
+                "avg_win_eth": 0.0, "avg_loss_eth": 0.0,
+                "avg_holding": 0, "collections_traded": 0,
+                "wash_legs": len(wash), "wash_cost_eth": wash_cost,
+            },
+            "per_collection": {}, "matched_trades": [], "open_positions": {},
+        }
+    s = result["summary"]
+    s["wash_legs"]         = len(wash)
+    s["wash_cost_eth"]     = wash_cost
+    s["realized_pnl_eth"] -= wash_cost
+    s["total_gas_eth"]    += wash_gas
+    s["total_fees_eth"]   += wash_fees
+    return result
+
+
 # ── Formatters ────────────────────────────────────────────────────────────────
 
 def format_summary(analytics: dict, wallet_name: str = None,
