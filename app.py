@@ -217,7 +217,8 @@ def api_report(address):
             return jsonify({"error": msg}), 404
 
         if since:
-            result = analytics.compute_analytics(trades)
+            full_result = get_cached_analytics(conn, address)
+            result = analytics.recompute_for_window(full_result, since, trades)
         else:
             result = get_cached_analytics(conn, address)
             # Keep the all-time summary cache fresh even on cache hits
@@ -312,11 +313,7 @@ def api_pnl_buckets(address):
     collection = (request.args.get("collection") or "").strip().lower()
     db.init_db()
     with db.get_conn() as conn:
-        if since:
-            trades = db.get_trades(conn, address, since=since)
-            result = analytics.compute_analytics(trades) if trades else {}
-        else:
-            result = get_cached_analytics(conn, address)
+        result = get_cached_analytics(conn, address)
     if not result:
         return jsonify({"buckets": [], "bucket_type": "daily", "total_pnl_eth": 0})
 
@@ -325,6 +322,8 @@ def api_pnl_buckets(address):
     buckets_map = {}
     for m in matched:
         if collection and m["collection_address"] != collection:
+            continue
+        if since and m["sell_ts"] < since:
             continue
         _add_daily_bucket(buckets_map, m)
 
@@ -606,7 +605,23 @@ def api_entity_report(entity_id):
             msg = "No trades in this time range." if since else "No trades found. Sync member wallets first."
             return jsonify({"error": msg}), 404
         if since:
-            result = analytics.compute_entity_analytics(trades, set(members))
+            clean_trades, wash = analytics.split_wash_trades(
+                [dict(t) for t in trades], set(members)
+            )
+            full_result = get_cached_entity_analytics(conn, entity_id)
+            result = analytics.recompute_for_window(full_result, since, clean_trades)
+            wash_gas  = sum(w.get("gas_eth") or 0 for w in wash)
+            wash_fees = sum(
+                w["eth_amount"] * (100 if (v := w.get("total_fee_bps")) is None else v) / 10000
+                for w in wash if w["side"] == "sell"
+            )
+            wash_cost = wash_gas + wash_fees
+            s = result["summary"]
+            s["wash_legs"]         = len(wash)
+            s["wash_cost_eth"]     = wash_cost
+            s["realized_pnl_eth"] -= wash_cost
+            s["total_gas_eth"]    += wash_gas
+            s["total_fees_eth"]   += wash_fees
         else:
             result = get_cached_entity_analytics(conn, entity_id)
             if result.get("summary"):
@@ -691,16 +706,14 @@ def api_entity_pnl_buckets(entity_id):
         if not entity:
             return jsonify({"error": "Entity not found"}), 404
         members = db.get_entity_members(conn, entity_id)
-        if since:
-            trades = db.get_trades_multi(conn, members, since=since)
-            result = analytics.compute_entity_analytics(trades, set(members)) if trades else {}
-        else:
-            result = get_cached_entity_analytics(conn, entity_id)
+        result = get_cached_entity_analytics(conn, entity_id)
         sync_times = [db.get_sync_state(conn, m) for m in members]
     if not result:
         return jsonify({"buckets": [], "bucket_type": "daily", "total_pnl_eth": 0})
     buckets_map = {}
     for m in result.get("matched_trades", []):
+        if since and m["sell_ts"] < since:
+            continue
         _add_daily_bucket(buckets_map, m)
     buckets = sorted(buckets_map.values(), key=lambda b: b["key"])
     total_pnl = sum(b["pnl_eth"] for b in buckets)

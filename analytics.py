@@ -248,6 +248,124 @@ def compute_analytics(trades: list) -> dict:
     }
 
 
+def recompute_for_window(full_result: dict, since_ts: int, window_trades: list) -> dict:
+    """
+    Derives a time-windowed analytics result from a full-history result.
+    - Matched trades: filtered to sell_ts >= since_ts (preserving correct FIFO cost basis)
+    - Buy/sell totals and open positions: from window_trades (trades within the window)
+    """
+    window_trades = [dict(t) for t in window_trades]
+
+    matched = [m for m in full_result.get("matched_trades", []) if m["sell_ts"] >= since_ts]
+    matched_nft_ids = {(m["collection_address"], m["nft_id"]) for m in matched}
+
+    window_buys  = [t for t in window_trades if t["side"] == "buy"]
+    window_sells = [t for t in window_trades if t["side"] == "sell"]
+    total_buy_eth     = sum(t["eth_amount"] for t in window_buys)
+    total_gas_eth     = sum(t.get("gas_eth", 0) or 0 for t in window_trades)
+    total_buys_count  = len(window_buys)
+    total_sells_count = len(window_sells)
+
+    unmatched_sells = [t for t in window_sells
+                       if (t["collection_address"], t["nft_id"]) not in matched_nft_ids]
+    unmatched_sell_eth  = sum(u["eth_amount"] for u in unmatched_sells)
+    unmatched_fees_eth  = sum(
+        u["eth_amount"] * (100 if (v := u.get("total_fee_bps")) is None else v) / 10000
+        for u in unmatched_sells
+    )
+    total_sell_eth = sum(m["sell_eth"] for m in matched)
+
+    realized_pnl   = sum(m["pnl_eth"]      for m in matched)
+    total_fees_eth = sum(m["sell_fees_eth"] for m in matched)
+    wins   = [m for m in matched if m["pnl_eth"] > 0]
+    losses = [m for m in matched if m["pnl_eth"] <= 0]
+    holding_times = [m["holding_secs"] for m in matched if m["holding_secs"] >= 0]
+    avg_holding   = sum(holding_times) / len(holding_times) if holding_times else 0
+
+    open_positions = {}
+    for key_str, pos_list in full_result.get("open_positions", {}).items():
+        in_window = [b for b in pos_list if b.get("block_timestamp", 0) >= since_ts]
+        if in_window:
+            open_positions[key_str] = in_window
+    open_count      = sum(len(p) for p in open_positions.values())
+    open_cost_basis = sum(
+        b["eth_amount"] + b.get("gas_eth", 0)
+        for pos in open_positions.values() for b in pos
+    )
+
+    unmatched_sell_keys = {(u["collection_address"], u["nft_id"]) for u in unmatched_sells}
+    col_stats = defaultdict(lambda: {
+        "name": "", "buys": 0, "sells": 0, "buy_eth": 0.0, "sell_eth": 0.0,
+        "fees_eth": 0.0, "creator_fee_bps": 0, "opensea_fee_bps": 0,
+        "total_fee_bps": 0, "realized_pnl": 0.0, "matched_trades": 0,
+        "holding_times": [], "open_positions": 0, "wins": 0, "losses": 0,
+        "last_trade_ts": 0, "first_trade_ts": None,
+    })
+    for row in window_trades:
+        col = row["collection_address"]
+        col_stats[col]["name"] = row.get("collection_name") or row.get("collection_slug", col[:10])
+        v = row.get("total_fee_bps")
+        col_stats[col]["total_fee_bps"] = 100 if v is None else v
+        ts = row.get("block_timestamp") or 0
+        if ts > col_stats[col]["last_trade_ts"]:
+            col_stats[col]["last_trade_ts"] = ts
+        if ts and (col_stats[col]["first_trade_ts"] is None or ts < col_stats[col]["first_trade_ts"]):
+            col_stats[col]["first_trade_ts"] = ts
+        if row["side"] == "buy":
+            col_stats[col]["buys"]    += 1
+            col_stats[col]["buy_eth"] += row["eth_amount"]
+        elif (row["collection_address"], row["nft_id"]) not in unmatched_sell_keys:
+            col_stats[col]["sells"]    += 1
+            col_stats[col]["sell_eth"] += row["eth_amount"]
+    for m in matched:
+        col = m["collection_address"]
+        col_stats[col]["realized_pnl"]   += m["pnl_eth"]
+        col_stats[col]["fees_eth"]       += m["sell_fees_eth"]
+        col_stats[col]["matched_trades"] += 1
+        if m["holding_secs"] >= 0:
+            col_stats[col]["holding_times"].append(m["holding_secs"])
+        if m["pnl_eth"] > 0:
+            col_stats[col]["wins"]   += 1
+        else:
+            col_stats[col]["losses"] += 1
+    for key_str, pos_list in open_positions.items():
+        col = key_str.split(":")[0]
+        col_stats[col]["open_positions"] += len(pos_list)
+    for col, s in col_stats.items():
+        ht = s["holding_times"]
+        s["avg_holding_secs"] = sum(ht) / len(ht) if ht else None
+        s["roi"]      = s["realized_pnl"] / s["buy_eth"] if s["buy_eth"] else 0
+        total_m = s["wins"] + s["losses"]
+        s["win_rate"] = s["wins"] / total_m if total_m else 0
+
+    return {
+        "summary": {
+            "total_trades":        len(window_trades),
+            "total_buys":          total_buys_count,
+            "total_sells":         total_sells_count,
+            "total_buy_eth":       total_buy_eth,
+            "total_sell_eth":      total_sell_eth,
+            "total_gas_eth":       total_gas_eth,
+            "total_fees_eth":      total_fees_eth,
+            "realized_pnl_eth":    realized_pnl,
+            "unmatched_sells":     len(unmatched_sells),
+            "unmatched_sell_eth":  unmatched_sell_eth,
+            "unmatched_fees_eth":  unmatched_fees_eth,
+            "open_positions":      open_count,
+            "open_cost_basis_eth": open_cost_basis,
+            "win_rate":     len(wins) / len(matched) if matched else 0,
+            "roi":          realized_pnl / total_buy_eth if total_buy_eth else 0,
+            "avg_win_eth":  sum(m["pnl_eth"] for m in wins)   / len(wins)   if wins   else 0,
+            "avg_loss_eth": sum(m["pnl_eth"] for m in losses) / len(losses) if losses else 0,
+            "avg_holding":  avg_holding,
+            "collections_traded": len(col_stats),
+        },
+        "per_collection": dict(col_stats),
+        "matched_trades": matched,
+        "open_positions": open_positions,
+    }
+
+
 # ── Player Card ───────────────────────────────────────────────────────────────
 
 def _diamond_score(avg_secs, flipper_days=7, trader_days=180):
