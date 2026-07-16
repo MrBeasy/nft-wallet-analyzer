@@ -42,7 +42,8 @@ def _match_fifo(buys: list, sells: list) -> tuple[list, list]:
             buy = buy_queue[buy_idx]
             buy_idx += 1
             holding = sell["block_timestamp"] - buy["block_timestamp"]
-            sell_fee_bps = sell.get("total_fee_bps") or 0
+            v = sell.get("total_fee_bps")
+            sell_fee_bps = 100 if v is None else v  # 1% fallback when collection not yet in DB
             sell_fees_eth = sell["eth_amount"] * sell_fee_bps / 10000
             sell_net = sell["eth_amount"] - sell_fees_eth
             pnl = sell_net - buy["eth_amount"] - buy.get("gas_eth", 0) - sell.get("gas_eth", 0)
@@ -127,7 +128,7 @@ def compute_analytics(trades: list) -> dict:
     total_sell_eth -= unmatched_sell_eth
     # Fees on unmatched sells (approximate — using the sell row's total_fee_bps)
     unmatched_fees_eth = sum(
-        u["eth_amount"] * (u.get("total_fee_bps") or 0) / 10000
+        u["eth_amount"] * (100 if (v := u.get("total_fee_bps")) is None else v) / 10000
         for u in all_unmatched_sells
     )
 
@@ -167,7 +168,8 @@ def compute_analytics(trades: list) -> dict:
     for row in trades:
         col = row["collection_address"]
         col_stats[col]["name"] = row.get("collection_name") or row.get("collection_slug", col[:10])
-        col_stats[col]["total_fee_bps"] = row.get("total_fee_bps") or 0
+        v = row.get("total_fee_bps")
+        col_stats[col]["total_fee_bps"] = 100 if v is None else v
         ts = row.get("block_timestamp") or 0
         if ts > col_stats[col]["last_trade_ts"]:
             col_stats[col]["last_trade_ts"] = ts
@@ -347,7 +349,8 @@ def compute_player_card(trades, per_collection, summary, floor_data, open_positi
                 floor_eth = (floor_data.get(slug) or {}).get("floor_price_eth")
                 if not floor_eth or floor_eth <= 0:
                     continue
-                fee_bps = b.get("total_fee_bps") or 0
+                v = b.get("total_fee_bps")
+                fee_bps = 100 if v is None else v
                 net = floor_eth * (1 - fee_bps / 10000)
                 cost = b["eth_amount"] + (b.get("gas_eth") or 0)
                 upnl_sum += net - cost
@@ -399,7 +402,7 @@ def compute_entity_analytics(trades: list, members: set) -> dict:
     clean, wash = split_wash_trades([dict(t) for t in trades], members)
     result = compute_analytics(clean)
     wash_gas  = sum(w.get("gas_eth") or 0 for w in wash)
-    wash_fees = sum(w["eth_amount"] * (w.get("total_fee_bps") or 0) / 10000
+    wash_fees = sum(w["eth_amount"] * (100 if (v := w.get("total_fee_bps")) is None else v) / 10000
                     for w in wash if w["side"] == "sell")
     wash_cost = wash_gas + wash_fees
     if not result:
@@ -516,7 +519,8 @@ def format_open_positions(analytics: dict, floor_prices: dict = None) -> str:
                 floor = floor_prices.get(slug) if slug else None
                 if floor is not None:
                     has_any_floor = True
-                    fee_bps = b.get("total_fee_bps") or 0
+                    v = b.get("total_fee_bps")
+                    fee_bps = 100 if v is None else v
                     floor_net = floor * (1 - fee_bps / 10000)
                     est_pnl = floor_net - cost
                     total_floor_net += floor_net

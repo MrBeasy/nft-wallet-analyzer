@@ -723,7 +723,8 @@ def _fetch_floor_upnl(conn, open_positions: dict) -> dict:
         for b in buys:
             slug = b.get("collection_slug")
             if slug:
-                slug_to_fee[slug] = b.get("total_fee_bps") or 0
+                v = b.get("total_fee_bps")
+                slug_to_fee[slug] = 100 if v is None else v
 
     now = int(_time.time())
     stale_threshold = now - db.FLOOR_CACHE_TTL_SECS
@@ -775,7 +776,8 @@ def _fetch_floor_upnl(conn, open_positions: dict) -> dict:
             cost = b["eth_amount"] + (b.get("gas_eth") or 0)
             total_cost += cost
             slug = b.get("collection_slug")
-            fee_bps = b.get("total_fee_bps") or 0
+            v = b.get("total_fee_bps")
+            fee_bps = 100 if v is None else v
             floor = floor_prices.get(slug) if slug else None
             if floor is not None:
                 total_floor_net += floor * (1 - fee_bps / 10000)
@@ -1229,7 +1231,7 @@ def api_benchmark():
                     basket_open_data.append((
                         _b.get("eth_amount", 0) + (_b.get("gas_eth") or 0),
                         _b.get("collection_slug"),
-                        _b.get("total_fee_bps") or 0,
+                        (100 if (v := _b.get("total_fee_bps")) is None else v),
                     ))
 
             for col_addr, cs in bw_stats["per_collection"].items():
@@ -1329,7 +1331,7 @@ def api_benchmark():
             target_open_data.append((
                 _b.get("eth_amount", 0) + (_b.get("gas_eth") or 0),
                 _b.get("collection_slug"),
-                _b.get("total_fee_bps") or 0,
+                (100 if (v := _b.get("total_fee_bps")) is None else v),
             ))
 
     _all_slugs = {slug for _, slug, _ in target_open_data + basket_open_data if slug}

@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS collections (
     slug                TEXT,
     name                TEXT,
     creator_fee_bps     INTEGER DEFAULT 0,
-    opensea_fee_bps     INTEGER DEFAULT 250,
+    opensea_fee_bps     INTEGER DEFAULT 100,
     total_fee_bps       INTEGER DEFAULT 0,
     fetched_at          INTEGER,
     floor_price_eth     REAL,
