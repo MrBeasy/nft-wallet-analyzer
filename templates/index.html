@@ -3113,7 +3113,7 @@ function niceAxisTicks(min, max, targetCount) {
   const tickMin = Math.ceil(min / step) * step;
   const ticks = [];
   for (let v = tickMin; v <= max + step * 0.01; v = Math.round((v + step) * 1e9) / 1e9) {
-    ticks.push(Math.round(v * 100) / 100);
+    ticks.push(Math.round(v * 1e9) / 1e9);
   }
   // Always include 0 if it's in range
   if (min < 0 && max > 0 && !ticks.includes(0)) ticks.push(0);
