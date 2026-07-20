@@ -3882,10 +3882,22 @@ async function runVolumeQuery() {
 
 function renderVolumeChart(rows) {
   rows = [...rows].sort((a, b) => new Date(a.day) - new Date(b.day));
-  const labels = rows.map(r => r.day);
+  // Slice to "YYYY-MM-DD" — avoids time-scale parsing issues with "YYYY-MM-DD 00:00:00"
+  const labels = rows.map(r => r.day.slice(0, 10));
   const values = rows.map(r => parseFloat(r.trading_volume_eth) || 0);
   if (mktVolChart) { mktVolChart.destroy(); mktVolChart = null; }
   const ctx = document.getElementById('mkt-vol-canvas').getContext('2d');
+
+  // Hardcode theme colors — CSS vars don't resolve inside Canvas
+  const C = {
+    muted:  '#7d8590',
+    border: '#30363d',
+    text:   '#e6edf3',
+    bar:    'rgba(88,166,255,0.6)',
+    barHov: 'rgba(88,166,255,0.85)',
+    ttBg:   '#161b22',
+  };
+
   mktVolChart = new Chart(ctx, {
     type: 'bar',
     data: {
@@ -3893,30 +3905,49 @@ function renderVolumeChart(rows) {
       datasets: [{
         label: 'Volume (ETH)',
         data: values,
-        backgroundColor: 'rgba(59,130,246,0.55)',
-        borderColor: 'rgba(59,130,246,0.9)',
-        borderWidth: 1,
-        borderRadius: 2,
+        backgroundColor: C.bar,
+        hoverBackgroundColor: C.barHov,
+        borderWidth: 0,
+        borderRadius: 3,
       }]
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      animation: { duration: 300 },
       plugins: {
         legend: { display: false },
-        tooltip: { callbacks: { label: c => `${c.parsed.y.toLocaleString(undefined, {maximumFractionDigits:2})} ETH` } }
+        tooltip: {
+          backgroundColor: C.ttBg,
+          borderColor: C.border,
+          borderWidth: 1,
+          titleColor: C.text,
+          bodyColor: C.muted,
+          padding: 10,
+          callbacks: {
+            title: items => items[0].label,
+            label: c => `  ${c.parsed.y.toLocaleString(undefined, {maximumFractionDigits: 1})} ETH`
+          }
+        }
       },
       scales: {
         x: {
-          type: 'time',
-          time: { unit: 'month', tooltipFormat: 'MMM d, yyyy' },
-          ticks: { color: 'var(--muted)', maxTicksLimit: 18 },
-          grid: { color: 'var(--border)' }
+          ticks: {
+            color: C.muted,
+            maxTicksLimit: 14,
+            maxRotation: 45,
+            font: { size: 11 }
+          },
+          grid: { color: C.border, lineWidth: 0.5 }
         },
         y: {
           beginAtZero: true,
-          ticks: { color: 'var(--muted)', callback: v => v.toLocaleString() + ' Ξ' },
-          grid: { color: 'var(--border)' }
+          ticks: {
+            color: C.muted,
+            font: { size: 11 },
+            callback: v => v >= 1000 ? (v / 1000).toFixed(0) + 'k Ξ' : v.toFixed(0) + ' Ξ'
+          },
+          grid: { color: C.border, lineWidth: 0.5 }
         }
       }
     }
