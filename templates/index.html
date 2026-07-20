@@ -780,7 +780,7 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
   <div id="mkt-view-volume" style="display:none">
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
       <div style="display:flex;align-items:center;gap:4px">
-        <input id="mkt-vol-days" type="number" min="1" max="365" value="180"
+        <input id="mkt-vol-days" type="number" min="1" max="365" value="180" onkeydown="if(event.key==='Enter')runVolumeQuery()"
           style="width:72px;padding:4px 7px;background:var(--surface);border:1px solid var(--border);
                  border-radius:var(--r);color:var(--text);font-size:12px">
         <span style="color:var(--muted);font-size:12px">days</span>
