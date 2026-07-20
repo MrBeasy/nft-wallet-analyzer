@@ -3916,6 +3916,7 @@ let marketRows = [];
 let marketSyncRunning = false;
 let mktActiveTab = 'watchlist';
 let mktVolChart  = null;
+let mktVolData   = null;  // full cached dataset from Dune
 
 async function loadMarket() {
   ['view-home','view-detail','view-meta','view-dune',
@@ -3933,20 +3934,29 @@ function mktSwitchTab(tab) {
   document.getElementById('mkt-tab-volume').classList.toggle('active',    tab === 'volume');
   document.getElementById('mkt-view-watchlist').style.display = tab === 'watchlist' ? '' : 'none';
   document.getElementById('mkt-view-volume').style.display    = tab === 'volume'    ? '' : 'none';
-  if (tab === 'volume' && !mktVolChart) runVolumeQuery();
+  if (tab === 'volume' && !mktVolData) runVolumeQuery();
 }
 
 async function runVolumeQuery() {
   const days   = parseInt(document.getElementById('mkt-vol-days').value, 10) || 180;
-  const btn    = document.getElementById('mkt-vol-run-btn');
   const status = document.getElementById('mkt-vol-status');
+
+  // If we already have the full dataset, just re-filter client-side
+  if (mktVolData) {
+    renderVolumeChart(mktVolData, days);
+    status.textContent = `showing ${days}d`;
+    status.style.color = 'var(--muted)';
+    return;
+  }
+
+  const btn    = document.getElementById('mkt-vol-run-btn');
   const loader = document.getElementById('mkt-vol-loader');
   btn.disabled = true;
   loader.style.display = '';
   status.textContent = '';
   const t0 = Date.now();
   try {
-    const res = await fetch(`/api/dune/eth_volume?days=${days}`);
+    const res = await fetch('/api/dune/eth_volume');
     if (!res.ok) {
       const e = await res.json().catch(() => ({}));
       status.textContent = e.error || 'Query failed';
@@ -3954,9 +3964,10 @@ async function runVolumeQuery() {
       return;
     }
     const { rows } = await res.json();
-    status.textContent = `${rows.length} rows · ${((Date.now() - t0) / 1000).toFixed(1)}s`;
+    mktVolData = rows;
+    status.textContent = `${((Date.now() - t0) / 1000).toFixed(1)}s`;
     status.style.color = 'var(--muted)';
-    renderVolumeChart(rows);
+    renderVolumeChart(rows, days);
   } catch (e) {
     status.textContent = 'Error: ' + e.message;
     status.style.color = 'var(--red)';
@@ -3966,8 +3977,12 @@ async function runVolumeQuery() {
   }
 }
 
-function renderVolumeChart(rows) {
-  rows = [...rows].sort((a, b) => new Date(a.day) - new Date(b.day));
+function renderVolumeChart(allRows, days) {
+  let rows = [...allRows].sort((a, b) => new Date(a.day) - new Date(b.day));
+  if (days) {
+    const cutoff = Date.now() - days * 86400000;
+    rows = rows.filter(r => new Date(r.day).getTime() >= cutoff);
+  }
   const labels  = rows.map(r => r.day.slice(0, 10));
   const volumes = rows.map(r => parseFloat(r.trading_volume_eth) || 0);
   const avgs    = rows.map(r => parseFloat(r.avg_value_eth)      || null);
