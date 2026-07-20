@@ -419,11 +419,19 @@ def api_sync():
 def api_wallet_update(address):
     address = address.lower()
     data = request.get_json() or {}
-    name = data.get("name")
-    notes = data.get("notes")
     db.init_db()
+    import time as _time
     with db.get_conn() as conn:
-        db.upsert_wallet(conn, address, name=name, notes=notes)
+        conn.execute(
+            "INSERT OR IGNORE INTO wallets (address, created_at) VALUES (?, ?)",
+            (address, int(_time.time()))
+        )
+        if "name" in data:
+            conn.execute("UPDATE wallets SET name = ? WHERE address = ?",
+                         (data["name"] or None, address))
+        if "notes" in data:
+            conn.execute("UPDATE wallets SET notes = ? WHERE address = ?",
+                         (data["notes"] or None, address))
     return jsonify({"ok": True})
 
 

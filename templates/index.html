@@ -62,7 +62,8 @@ main{padding:24px;max-width:1280px;margin:0 auto}
 /* ── Detail header ── */
 .d-hdr{display:flex;align-items:flex-start;justify-content:space-between;
   margin-bottom:24px;gap:16px;flex-wrap:wrap}
-.d-name{font-size:22px;font-weight:700;letter-spacing:-.5px;margin-bottom:4px}
+.d-name{font-size:22px;font-weight:700;letter-spacing:-.5px;margin-bottom:4px;cursor:text}
+.d-name-input{font-size:22px;font-weight:700;letter-spacing:-.5px;margin-bottom:4px;background:var(--surface2);border:1px solid var(--blue);border-radius:var(--r2);padding:0 6px;color:var(--text);font-family:inherit;outline:none;width:auto;min-width:120px}
 .d-addr{font-family:var(--mono);font-size:12px;color:var(--muted);display:block}
 .d-actions{display:flex;align-items:center;gap:10px}
 .d-synced{font-size:12px;color:var(--muted)}
@@ -417,7 +418,7 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
 <main id="view-detail" style="display:none">
   <div class="d-hdr">
     <div>
-      <h2 id="d-name" class="d-name"></h2>
+      <h2 id="d-name" class="d-name" onclick="startEditWalletName()" title="Click to rename"></h2>
       <div id="d-flags" style="display:flex;gap:5px;align-items:center;flex-wrap:wrap;margin-bottom:4px"></div>
       <span id="d-addr" class="d-addr"></span>
       <div class="notes-wrap">
@@ -2990,6 +2991,51 @@ async function saveNotes() {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ notes }),
+    });
+    const indicator = document.getElementById('notes-saved');
+    indicator.classList.add('show');
+    setTimeout(() => indicator.classList.remove('show'), 1800);
+  } catch {}
+}
+
+function startEditWalletName() {
+  const h2 = document.getElementById('d-name');
+  if (h2.querySelector('input')) return; // already editing
+  const current = h2.textContent;
+  const inp = document.createElement('input');
+  inp.className = 'd-name-input';
+  inp.value = current === 'Unnamed Wallet' ? '' : current;
+  inp.placeholder = 'Wallet name…';
+  inp.size = Math.max(14, inp.value.length + 2);
+  inp.oninput = () => { inp.size = Math.max(14, inp.value.length + 2); };
+  inp.onblur = () => commitWalletName(inp.value.trim());
+  inp.onkeydown = e => {
+    if (e.key === 'Enter') { e.preventDefault(); inp.blur(); }
+    if (e.key === 'Escape') { inp.onblur = null; h2.textContent = current; }
+  };
+  h2.textContent = '';
+  h2.appendChild(inp);
+  inp.focus();
+  inp.select();
+}
+
+async function commitWalletName(newName) {
+  if (!currentWallet) return;
+  const h2 = document.getElementById('d-name');
+  h2.textContent = newName || 'Unnamed Wallet';
+
+  const cacheKey = currentWallet + ':' + detailDays;
+  if (reportCache[cacheKey]) reportCache[cacheKey].wallet.name = newName || null;
+  walletCache = null; // invalidate list cache so wallet list refreshes
+
+  try {
+    const url = isEntity()
+      ? `/api/entities/${currentWallet.slice(7)}`
+      : `/api/wallet/${currentWallet}`;
+    await fetch(url, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: newName || null }),
     });
     const indicator = document.getElementById('notes-saved');
     indicator.classList.add('show');
