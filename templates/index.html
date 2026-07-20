@@ -3985,11 +3985,9 @@ function renderVolumeChart(allRows, days) {
   }
   const labels  = rows.map(r => r.day.slice(0, 10));
   const volumes = rows.map(r => parseFloat(r.trading_volume_eth) || 0);
-  // 7-day trailing rolling average of daily volume
-  const rollingAvg = volumes.map((_, i) => {
-    const slice = volumes.slice(Math.max(0, i - 6), i + 1);
-    return slice.reduce((a, b) => a + b, 0) / slice.length;
-  });
+  // Flat average line for the displayed timeframe
+  const mean = volumes.reduce((a, b) => a + b, 0) / (volumes.length || 1);
+  const rollingAvg = volumes.map(() => mean);
 
   if (mktVolChart) { mktVolChart.destroy(); mktVolChart = null; }
   const ctx = document.getElementById('mkt-vol-canvas').getContext('2d');
@@ -4022,7 +4020,7 @@ function renderVolumeChart(allRows, days) {
         },
         {
           type: 'line',
-          label: '7d Avg',
+          label: 'Avg',
           data: rollingAvg,
           borderColor: C.avgLine,
           backgroundColor: 'transparent',
