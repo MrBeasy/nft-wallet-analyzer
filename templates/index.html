@@ -753,17 +753,43 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
 
   <div id="mkt-overview" style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap"></div>
 
-  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-    <span style="font-size:13px;font-weight:600;color:var(--muted)">Watchlist</span>
-    <div style="display:flex;gap:6px">
-      <button class="btn" title="Add collection" onclick="openMarketAdd()"
-        style="color:var(--blue);font-size:15px;font-weight:700;padding:2px 12px;line-height:1.4">+</button>
-      <button class="btn" title="Remove collections" onclick="openMarketRemove()"
-        style="color:var(--red);font-size:15px;font-weight:700;padding:2px 12px;line-height:1.4">−</button>
-    </div>
+  <div class="filter-btns" style="margin-bottom:16px">
+    <button class="fbtn active" id="mkt-tab-watchlist" onclick="mktSwitchTab('watchlist')">Collection Watchlist</button>
+    <button class="fbtn"        id="mkt-tab-volume"    onclick="mktSwitchTab('volume')">OS ETH Volume</button>
   </div>
 
-  <div id="mkt-table-wrap"></div>
+  <div id="mkt-view-watchlist">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <span style="font-size:13px;font-weight:600;color:var(--muted)">Collection Watchlist</span>
+      <div style="display:flex;gap:6px">
+        <button class="btn" title="Add collection" onclick="openMarketAdd()"
+          style="color:var(--blue);font-size:15px;font-weight:700;padding:2px 12px;line-height:1.4">+</button>
+        <button class="btn" title="Remove collections" onclick="openMarketRemove()"
+          style="color:var(--red);font-size:15px;font-weight:700;padding:2px 12px;line-height:1.4">−</button>
+      </div>
+    </div>
+    <div id="mkt-table-wrap"></div>
+  </div>
+
+  <div id="mkt-view-volume" style="display:none">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+      <div style="display:flex;align-items:center;gap:4px">
+        <input id="mkt-vol-days" type="number" min="1" max="365" value="180"
+          style="width:72px;padding:4px 7px;background:var(--surface);border:1px solid var(--border);
+                 border-radius:var(--r);color:var(--text);font-size:12px">
+        <span style="color:var(--muted);font-size:12px">days</span>
+      </div>
+      <button id="mkt-vol-run-btn" class="btn btn-primary" onclick="runVolumeQuery()">Run</button>
+      <span id="mkt-vol-status" style="font-size:12px;color:var(--muted)"></span>
+    </div>
+    <div id="mkt-vol-loader" class="loader" style="display:none">
+      <div class="spinner"></div>
+      <p style="margin-top:8px;font-size:13px;color:var(--muted)">Running Dune query…</p>
+    </div>
+    <div style="position:relative;height:420px">
+      <canvas id="mkt-vol-canvas"></canvas>
+    </div>
+  </div>
 
   <!-- Add-collection modal -->
   <div id="m-mkt-add" class="moverlay" style="display:none" onclick="if(event.target===this)closeModal('m-mkt-add')">
@@ -3802,6 +3828,8 @@ function openDuneWallet(address) {
 let marketDays = 1;
 let marketRows = [];
 let marketSyncRunning = false;
+let mktActiveTab = 'watchlist';
+let mktVolChart  = null;
 
 async function loadMarket() {
   ['view-home','view-detail','view-meta','view-dune',
@@ -3811,6 +3839,88 @@ async function loadMarket() {
   setNavActive('market');
   await fetchMarketData();
   runMarketSync({ force: false });
+}
+
+function mktSwitchTab(tab) {
+  mktActiveTab = tab;
+  document.getElementById('mkt-tab-watchlist').classList.toggle('active', tab === 'watchlist');
+  document.getElementById('mkt-tab-volume').classList.toggle('active',    tab === 'volume');
+  document.getElementById('mkt-view-watchlist').style.display = tab === 'watchlist' ? '' : 'none';
+  document.getElementById('mkt-view-volume').style.display    = tab === 'volume'    ? '' : 'none';
+  if (tab === 'volume' && !mktVolChart) runVolumeQuery();
+}
+
+async function runVolumeQuery() {
+  const days   = parseInt(document.getElementById('mkt-vol-days').value, 10) || 180;
+  const btn    = document.getElementById('mkt-vol-run-btn');
+  const status = document.getElementById('mkt-vol-status');
+  const loader = document.getElementById('mkt-vol-loader');
+  btn.disabled = true;
+  loader.style.display = '';
+  status.textContent = '';
+  const t0 = Date.now();
+  try {
+    const res = await fetch(`/api/dune/eth_volume?days=${days}`);
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({}));
+      status.textContent = e.error || 'Query failed';
+      status.style.color = 'var(--red)';
+      return;
+    }
+    const { rows } = await res.json();
+    status.textContent = `${rows.length} rows · ${((Date.now() - t0) / 1000).toFixed(1)}s`;
+    status.style.color = 'var(--muted)';
+    renderVolumeChart(rows);
+  } catch (e) {
+    status.textContent = 'Error: ' + e.message;
+    status.style.color = 'var(--red)';
+  } finally {
+    btn.disabled = false;
+    loader.style.display = 'none';
+  }
+}
+
+function renderVolumeChart(rows) {
+  rows = [...rows].sort((a, b) => new Date(a.day) - new Date(b.day));
+  const labels = rows.map(r => r.day);
+  const values = rows.map(r => parseFloat(r.trading_volume_eth) || 0);
+  if (mktVolChart) { mktVolChart.destroy(); mktVolChart = null; }
+  const ctx = document.getElementById('mkt-vol-canvas').getContext('2d');
+  mktVolChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Volume (ETH)',
+        data: values,
+        backgroundColor: 'rgba(59,130,246,0.55)',
+        borderColor: 'rgba(59,130,246,0.9)',
+        borderWidth: 1,
+        borderRadius: 2,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: c => `${c.parsed.y.toLocaleString(undefined, {maximumFractionDigits:2})} ETH` } }
+      },
+      scales: {
+        x: {
+          type: 'time',
+          time: { unit: 'month', tooltipFormat: 'MMM d, yyyy' },
+          ticks: { color: 'var(--muted)', maxTicksLimit: 18 },
+          grid: { color: 'var(--border)' }
+        },
+        y: {
+          beginAtZero: true,
+          ticks: { color: 'var(--muted)', callback: v => v.toLocaleString() + ' Ξ' },
+          grid: { color: 'var(--border)' }
+        }
+      }
+    }
+  });
 }
 
 async function fetchMarketData() {

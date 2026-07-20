@@ -1510,6 +1510,7 @@ def api_collection_pnl_buckets(address):
 # ── API: Dune top traders ─────────────────────────────────────────────────────
 
 DUNE_QUERY_ID = 7785187
+DUNE_ETH_VOLUME_QUERY_ID = 7606990
 
 @app.route("/api/dune/top_traders")
 def api_dune_top_traders():
@@ -1559,6 +1560,51 @@ def api_dune_top_traders():
     rows = data.get("result", {}).get("rows", [])
     meta = data.get("result", {}).get("metadata", {})
     return jsonify({"rows": rows, "total": meta.get("total_row_count", len(rows))})
+
+
+@app.route("/api/dune/eth_volume")
+def api_dune_eth_volume():
+    days = request.args.get("days", "180")
+
+    dune_key = os.getenv("DUNE_API_KEY")
+    if not dune_key:
+        return jsonify({"error": "DUNE_API_KEY not set"}), 500
+
+    hdrs = {"X-Dune-API-Key": dune_key}
+
+    exec_resp = _req.post(
+        f"https://api.dune.com/api/v1/query/{DUNE_ETH_VOLUME_QUERY_ID}/execute",
+        headers=hdrs,
+        json={"query_parameters": {"interval": days}},
+        timeout=15,
+    )
+    if not exec_resp.ok:
+        return jsonify({"error": f"Dune execute failed: {exec_resp.text}"}), 502
+
+    execution_id = exec_resp.json()["execution_id"]
+
+    for _ in range(60):
+        status_resp = _req.get(
+            f"https://api.dune.com/api/v1/execution/{execution_id}/status",
+            headers=hdrs,
+            timeout=10,
+        )
+        state = status_resp.json().get("state", "")
+        if state == "QUERY_STATE_COMPLETED":
+            break
+        if any(s in state for s in ("FAILED", "CANCELLED", "EXPIRED")):
+            return jsonify({"error": f"Dune query {state}"}), 500
+        _time.sleep(1)
+    else:
+        return jsonify({"error": "Dune query timed out after 60s"}), 504
+
+    result_resp = _req.get(
+        f"https://api.dune.com/api/v1/execution/{execution_id}/results",
+        headers=hdrs,
+        timeout=15,
+    )
+    rows = result_resp.json().get("result", {}).get("rows", [])
+    return jsonify({"rows": rows})
 
 
 # ── API: Market watchlist ──────────────────────────────────────────────────────
