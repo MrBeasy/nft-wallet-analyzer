@@ -788,7 +788,9 @@ def _fetch_floor_upnl(conn, open_positions: dict) -> dict:
 
     total_cost = 0.0
     total_floor_net = 0.0
+    total_floor_cost = 0.0
     total_bid_net = 0.0
+    total_bid_cost = 0.0
     positions_with_floor = 0
     positions_with_bid = 0
 
@@ -802,14 +804,16 @@ def _fetch_floor_upnl(conn, open_positions: dict) -> dict:
             floor = floor_prices.get(slug) if slug else None
             if floor is not None:
                 total_floor_net += floor * (1 - fee_bps / 10000)
+                total_floor_cost += cost
                 positions_with_floor += 1
             bid = bid_prices.get(slug) if slug else None
             if bid is not None:
                 total_bid_net += bid * (1 - fee_bps / 10000)
+                total_bid_cost += cost
                 positions_with_bid += 1
 
-    upnl = (total_floor_net - total_cost) if positions_with_floor else None
-    upnl_bid = (total_bid_net - total_cost) if positions_with_bid else None
+    upnl = (total_floor_net - total_floor_cost) if positions_with_floor else None
+    upnl_bid = (total_bid_net - total_bid_cost) if positions_with_bid else None
     return {
         "upnl_eth": upnl,
         "upnl_bid_eth": upnl_bid,
