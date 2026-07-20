@@ -182,6 +182,19 @@ CREATE TABLE IF NOT EXISTS entity_summaries (
     wash_legs           INTEGER DEFAULT 0,
     wash_cost_eth       REAL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS dashboard_users (
+    id         TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    created_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS user_checkpoints (
+    user_id         TEXT,
+    view_key        TEXT,
+    last_checked_at INTEGER,
+    PRIMARY KEY (user_id, view_key)
+);
 """
 
 
@@ -910,3 +923,33 @@ def upsert_entity_summary(conn, entity_id: int, summary: dict, latest_trade_ts: 
         s["open_positions"], s["open_cost_basis_eth"], s["collections_traded"],
         s.get("wash_legs", 0), s.get("wash_cost_eth", 0.0),
     ))
+
+
+# ---------- dashboard users ----------
+
+def list_dashboard_users(conn):
+    return conn.execute("SELECT id, name FROM dashboard_users ORDER BY created_at").fetchall()
+
+
+def create_dashboard_user(conn, user_id, name):
+    import time as _time
+    conn.execute(
+        "INSERT INTO dashboard_users (id, name, created_at) VALUES (?, ?, ?)",
+        (user_id, name, int(_time.time()))
+    )
+
+
+def get_checkpoint(conn, user_id, view_key):
+    row = conn.execute(
+        "SELECT last_checked_at FROM user_checkpoints WHERE user_id=? AND view_key=?",
+        (user_id, view_key)
+    ).fetchone()
+    return row["last_checked_at"] if row else None
+
+
+def set_checkpoint(conn, user_id, view_key, ts):
+    conn.execute(
+        "INSERT INTO user_checkpoints (user_id, view_key, last_checked_at) VALUES (?, ?, ?) "
+        "ON CONFLICT(user_id, view_key) DO UPDATE SET last_checked_at=excluded.last_checked_at",
+        (user_id, view_key, ts)
+    )
