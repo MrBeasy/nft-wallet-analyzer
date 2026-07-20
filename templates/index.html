@@ -743,7 +743,10 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
           onchange="const v=parseInt(this.value);if(v>0)setMarketWindow(v)">
         <span style="color:var(--muted);font-size:12px">days</span>
       </div>
-      <button class="fbtn" id="mkt-btn-since" onclick="setMarketSince()">Since last checked</button>
+      <span style="display:flex;flex-direction:column;gap:2px">
+        <button class="fbtn" id="mkt-btn-since" onclick="setMarketSince()">Since last checked</button>
+        <span id="mkt-last-checked-ts" style="font-size:10px;color:var(--muted);text-align:center"></span>
+      </span>
       <button class="btn btn-primary" id="mkt-sync-btn" onclick="runMarketSync({force:true})" style="margin-left:8px">Sync</button>
       <span id="mkt-sync-status" style="font-size:12px;color:var(--muted)"></span>
     </div>
@@ -3910,8 +3913,9 @@ async function createAndSelectUser() {
 
 // ── Market view ───────────────────────────────────────────────────────────────
 
-let marketDays  = 1;
-let marketSince = null;
+let marketDays         = 1;
+let marketSince        = null;
+let marketLastCheckedAt = null;  // previous checkpoint captured on last load
 let marketRows = [];
 let marketSyncRunning = false;
 let mktActiveTab = 'watchlist';
@@ -3924,6 +3928,15 @@ async function loadMarket() {
     document.getElementById(id).style.display = 'none');
   document.getElementById('view-market').style.display = '';
   setNavActive('market');
+  if (currentUserId) {
+    const r = await fetch(`/api/users/${currentUserId}/checkpoint/market`, { method: 'POST' });
+    const cp = await r.json();
+    marketLastCheckedAt = cp.previous;
+    const tsEl = document.getElementById('mkt-last-checked-ts');
+    tsEl.textContent = marketLastCheckedAt
+      ? 'last: ' + new Date(marketLastCheckedAt * 1000).toLocaleString()
+      : '';
+  }
   await fetchMarketData();
   runMarketSync({ force: false });
 }
@@ -4117,15 +4130,13 @@ async function setMarketSince() {
     openUserPicker();
     return;
   }
-  const res = await fetch(`/api/users/${currentUserId}/checkpoint/market`, { method: 'POST' });
-  const { previous, current } = await res.json();
   const sinceLabel = document.getElementById('market-since-label');
-  if (!previous) {
-    sinceLabel.textContent = 'No prior checkpoint — tracking from now. Click again next time to see what\'s new.';
+  if (!marketLastCheckedAt) {
+    sinceLabel.textContent = 'No prior visit recorded — will track from next load.';
     sinceLabel.style.display = '';
     return;
   }
-  marketSince = previous;
+  marketSince = marketLastCheckedAt;
   document.querySelectorAll('[id^="mkt-btn-"]').forEach(b => b.classList.remove('active'));
   document.getElementById('mkt-btn-since').classList.add('active');
   fetchMarketData();
