@@ -4011,7 +4011,7 @@ function renderVolumeChart(rows) {
           pointRadius: 0,
           pointHoverRadius: 3,
           tension: 0.3,
-          yAxisID: 'y2',
+          yAxisID: 'y',
           order: 1,
         },
       ]
@@ -4022,20 +4022,7 @@ function renderVolumeChart(rows) {
       animation: { duration: 300 },
       interaction: { mode: 'index', intersect: false },
       plugins: {
-        legend: {
-          display: true,
-          position: 'top',
-          align: 'end',
-          labels: {
-            color: C.muted,
-            font: { size: 11 },
-            boxWidth: 12,
-            boxHeight: 2,
-            padding: 16,
-            usePointStyle: true,
-            pointStyle: 'line',
-          }
-        },
+        legend: { display: false },
         tooltip: {
           backgroundColor: C.ttBg,
           borderColor: C.border,
@@ -4071,16 +4058,6 @@ function renderVolumeChart(rows) {
           },
           grid: { color: C.border, lineWidth: 0.5 }
         },
-        y2: {
-          beginAtZero: false,
-          position: 'right',
-          ticks: {
-            color: C.muted,
-            font: { size: 11 },
-            callback: v => v.toFixed(1) + ' Ξ'
-          },
-          grid: { drawOnChartArea: false }
-        }
       }
     }
   });
