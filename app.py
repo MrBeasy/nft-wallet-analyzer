@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import time as _time
+import uuid as _uuid
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone as _tz
 
@@ -1564,57 +1565,74 @@ def api_dune_top_traders():
 
 @app.route("/api/dune/eth_volume")
 def api_dune_eth_volume():
-    days = request.args.get("days", "180")
-
     dune_key = os.getenv("DUNE_API_KEY")
     if not dune_key:
         return jsonify({"error": "DUNE_API_KEY not set"}), 500
 
-    hdrs = {"X-Dune-API-Key": dune_key}
-
-    exec_resp = _req.post(
-        f"https://api.dune.com/api/v1/query/{DUNE_ETH_VOLUME_QUERY_ID}/execute",
-        headers=hdrs,
-        json={"query_parameters": {"interval": days}},
+    # Use cached latest results — no execution needed for historical volume data
+    resp = _req.get(
+        f"https://api.dune.com/api/v1/query/{DUNE_ETH_VOLUME_QUERY_ID}/results",
+        headers={"X-Dune-API-Key": dune_key},
         timeout=15,
     )
-    if not exec_resp.ok:
-        return jsonify({"error": f"Dune execute failed: {exec_resp.text}"}), 502
+    if not resp.ok:
+        return jsonify({"error": f"Dune request failed: {resp.text}"}), 502
 
-    execution_id = exec_resp.json()["execution_id"]
-
-    for _ in range(60):
-        status_resp = _req.get(
-            f"https://api.dune.com/api/v1/execution/{execution_id}/status",
-            headers=hdrs,
-            timeout=10,
-        )
-        state = status_resp.json().get("state", "")
-        if state == "QUERY_STATE_COMPLETED":
-            break
-        if any(s in state for s in ("FAILED", "CANCELLED", "EXPIRED")):
-            return jsonify({"error": f"Dune query {state}"}), 500
-        _time.sleep(1)
-    else:
-        return jsonify({"error": "Dune query timed out after 60s"}), 504
-
-    result_resp = _req.get(
-        f"https://api.dune.com/api/v1/execution/{execution_id}/results",
-        headers=hdrs,
-        timeout=15,
-    )
-    rows = result_resp.json().get("result", {}).get("rows", [])
+    rows = resp.json().get("result", {}).get("rows", [])
     return jsonify({"rows": rows})
+
+
+# ── API: Dashboard users / checkpoints ───────────────────────────────────────
+
+@app.route("/api/users")
+def api_list_users():
+    db.init_db()
+    with db.get_conn() as conn:
+        rows = db.list_dashboard_users(conn)
+        return jsonify([{"id": r["id"], "name": r["name"]} for r in rows])
+
+
+@app.route("/api/users", methods=["POST"])
+def api_create_user():
+    data = request.get_json() or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "name required"}), 400
+    user_id = str(_uuid.uuid4())
+    db.init_db()
+    with db.get_conn() as conn:
+        db.create_dashboard_user(conn, user_id, name)
+    return jsonify({"id": user_id, "name": name}), 201
+
+
+@app.route("/api/users/<user_id>/checkpoint/<view_key>")
+def api_get_checkpoint(user_id, view_key):
+    db.init_db()
+    with db.get_conn() as conn:
+        ts = db.get_checkpoint(conn, user_id, view_key)
+    return jsonify({"last_checked_at": ts})
+
+
+@app.route("/api/users/<user_id>/checkpoint/<view_key>", methods=["POST"])
+def api_swap_checkpoint(user_id, view_key):
+    """Returns old checkpoint and sets it to now."""
+    now = int(_time.time())
+    db.init_db()
+    with db.get_conn() as conn:
+        previous = db.get_checkpoint(conn, user_id, view_key)
+        db.set_checkpoint(conn, user_id, view_key, now)
+    return jsonify({"previous": previous, "current": now})
 
 
 # ── API: Market watchlist ──────────────────────────────────────────────────────
 
 @app.route("/api/market")
 def api_market():
-    days = request.args.get("days", 1, type=float)
+    since = request.args.get("since", None, type=int)
+    days  = request.args.get("days", 1, type=float)
     db.init_db()
-    now = int(_time.time())
-    cutoff = int(now - days * 86400) if days > 0 else 0
+    now    = int(_time.time())
+    cutoff = since if since is not None else (int(now - days * 86400) if days > 0 else 0)
     rows = []
     with db.get_conn() as conn:
         watchlist = db.list_watchlist(conn)
@@ -1657,7 +1675,7 @@ def api_market():
                 "last_synced_at": ss["last_synced_at"] if ss else None,
                 "oldest_event_ts": oldest_map.get(slug),
             })
-    return jsonify({"rows": rows, "days": days})
+    return jsonify({"rows": rows, "days": days, "cutoff_ts": cutoff})
 
 
 @app.route("/api/market/sync", methods=["POST"])
@@ -1729,10 +1747,11 @@ def api_market_sync():
 
 @app.route("/api/market/trades/<slug>")
 def api_market_trades(slug):
-    days = request.args.get("days", 1, type=float)
+    since  = request.args.get("since", None, type=int)
+    days   = request.args.get("days", 1, type=float)
     db.init_db()
-    now = int(_time.time())
-    cutoff = int(now - days * 86400) if days > 0 else 0
+    now    = int(_time.time())
+    cutoff = since if since is not None else (int(now - days * 86400) if days > 0 else 0)
     with db.get_conn() as conn:
         q = ("SELECT block_timestamp, eth_amount, buyer_address, seller_address, tx_hash, nft_id, sell_type "
              "FROM market_trades WHERE slug=?")

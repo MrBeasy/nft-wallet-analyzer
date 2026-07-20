@@ -338,7 +338,11 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
       <button class="nav-btn" id="nav-benchmark" onclick="navigate('/benchmark')">Benchmark</button>
     </nav>
   </div>
-  <div>
+  <div style="display:flex;align-items:center;gap:10px">
+    <span id="user-indicator" onclick="openUserPicker()"
+      style="cursor:pointer;font-size:13px;color:var(--muted);padding:4px 10px;border:1px solid var(--border);border-radius:var(--r)">
+      User: <span id="user-name-display">Select</span>
+    </span>
     <button class="btn btn-ghost" onclick="openFlagsModal()" style="margin-right:6px">⚑ Flags</button>
     <button class="btn btn-outline" onclick="openClusterModal(null)" style="margin-right:6px">+ New Cluster</button>
     <button class="btn btn-primary" onclick="openAddModal()">+ Add Wallet</button>
@@ -739,9 +743,11 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
           onchange="const v=parseInt(this.value);if(v>0)setMarketWindow(v)">
         <span style="color:var(--muted);font-size:12px">days</span>
       </div>
+      <button class="fbtn" id="mkt-btn-since" onclick="setMarketSince()">Since last checked</button>
       <button class="btn btn-primary" id="mkt-sync-btn" onclick="runMarketSync({force:true})" style="margin-left:8px">Sync</button>
       <span id="mkt-sync-status" style="font-size:12px;color:var(--muted)"></span>
     </div>
+    <div id="market-since-label" style="display:none;font-size:12px;color:var(--muted);margin-top:6px"></div>
   </div>
 
   <details id="mkt-log-details" style="margin-bottom:12px">
@@ -788,6 +794,28 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
     </div>
     <div style="position:relative;height:420px">
       <canvas id="mkt-vol-canvas"></canvas>
+    </div>
+  </div>
+
+  <!-- User-picker modal -->
+  <div id="m-user-picker" class="moverlay" style="display:none" onclick="if(event.target===this)closeModal('m-user-picker')">
+    <div class="modal modal-sm" onclick="event.stopPropagation()">
+      <div class="modal-hdr">
+        <h3>Select User</h3>
+        <button class="btn-close" onclick="closeModal('m-user-picker')">&#x2715;</button>
+      </div>
+      <div class="modal-body">
+        <div id="user-picker-list" style="margin-bottom:12px"></div>
+        <hr style="margin:12px 0;opacity:0.2;border-color:var(--border)">
+        <div style="display:flex;gap:8px">
+          <input id="new-user-input" placeholder="New user name..."
+            style="flex:1;padding:6px 10px;background:var(--surface);border:1px solid var(--border);
+                   border-radius:var(--r);color:var(--text);font-size:13px"
+            onkeydown="if(event.key==='Enter')createAndSelectUser()">
+          <button class="btn btn-primary" onclick="createAndSelectUser()">Add</button>
+        </div>
+        <div id="user-picker-err" style="display:none;color:var(--red);font-size:12px;margin-top:8px"></div>
+      </div>
     </div>
   </div>
 
@@ -1041,6 +1069,9 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
 let currentWallet = null;
 let syncTarget = null;
 let syncAutoNavigate = false;
+
+let currentUserId   = localStorage.getItem('dashboardUserId')   || null;
+let currentUserName = localStorage.getItem('dashboardUserName') || null;
 let syncRunning = false;
 let entitySyncActive = false;
 let clusterEditId = null;
@@ -1077,7 +1108,14 @@ function navigate(path) { window.location.hash = path; }
 function isEntity() { return typeof currentWallet === 'string' && currentWallet.startsWith('entity/'); }
 
 window.addEventListener('hashchange', router);
-window.addEventListener('DOMContentLoaded', router);
+window.addEventListener('DOMContentLoaded', () => {
+  if (currentUserName) {
+    document.getElementById('user-name-display').textContent = currentUserName;
+  } else {
+    openUserPicker();
+  }
+  router();
+});
 
 function router() {
   const h = window.location.hash || '#/';
@@ -3823,9 +3861,57 @@ function openDuneWallet(address) {
   runSync(address, '', false);
 }
 
+// ── User picker ───────────────────────────────────────────────────────────────
+
+async function openUserPicker() {
+  document.getElementById('user-picker-err').style.display = 'none';
+  document.getElementById('new-user-input').value = '';
+  const res = await fetch('/api/users');
+  const users = await res.json();
+  const list = document.getElementById('user-picker-list');
+  list.innerHTML = users.length
+    ? users.map(u =>
+        `<div onclick="selectUser('${esc(u.id)}','${esc(u.name)}')"
+          style="padding:8px 12px;cursor:pointer;border-radius:var(--r);margin-bottom:4px;
+                 background:${u.id === currentUserId ? 'var(--border)' : 'var(--surface)'}">${esc(u.name)}</div>`
+      ).join('')
+    : '<div style="color:var(--muted);font-size:13px;margin-bottom:8px">No users yet — create one below.</div>';
+  document.getElementById('m-user-picker').style.display = 'flex';
+}
+
+function selectUser(id, name) {
+  currentUserId   = id;
+  currentUserName = name;
+  localStorage.setItem('dashboardUserId',   id);
+  localStorage.setItem('dashboardUserName', name);
+  document.getElementById('user-name-display').textContent = name;
+  closeModal('m-user-picker');
+}
+
+async function createAndSelectUser() {
+  const name = document.getElementById('new-user-input').value.trim();
+  if (!name) return;
+  const errEl = document.getElementById('user-picker-err');
+  errEl.style.display = 'none';
+  const res = await fetch('/api/users', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name})
+  });
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}));
+    errEl.textContent = e.error || 'Failed to create user.';
+    errEl.style.display = '';
+    return;
+  }
+  const user = await res.json();
+  selectUser(user.id, user.name);
+}
+
 // ── Market view ───────────────────────────────────────────────────────────────
 
-let marketDays = 1;
+let marketDays  = 1;
+let marketSince = null;
 let marketRows = [];
 let marketSyncRunning = false;
 let mktActiveTab = 'watchlist';
@@ -3882,41 +3968,74 @@ async function runVolumeQuery() {
 
 function renderVolumeChart(rows) {
   rows = [...rows].sort((a, b) => new Date(a.day) - new Date(b.day));
-  // Slice to "YYYY-MM-DD" — avoids time-scale parsing issues with "YYYY-MM-DD 00:00:00"
-  const labels = rows.map(r => r.day.slice(0, 10));
-  const values = rows.map(r => parseFloat(r.trading_volume_eth) || 0);
+  const labels  = rows.map(r => r.day.slice(0, 10));
+  const volumes = rows.map(r => parseFloat(r.trading_volume_eth) || 0);
+  const avgs    = rows.map(r => parseFloat(r.avg_value_eth)      || null);
+
   if (mktVolChart) { mktVolChart.destroy(); mktVolChart = null; }
   const ctx = document.getElementById('mkt-vol-canvas').getContext('2d');
 
   // Hardcode theme colors — CSS vars don't resolve inside Canvas
   const C = {
-    muted:  '#7d8590',
-    border: '#30363d',
-    text:   '#e6edf3',
-    bar:    'rgba(88,166,255,0.6)',
-    barHov: 'rgba(88,166,255,0.85)',
-    ttBg:   '#161b22',
+    muted:   '#7d8590',
+    border:  '#30363d',
+    text:    '#e6edf3',
+    bar:     'rgba(88,166,255,0.6)',
+    barHov:  'rgba(88,166,255,0.85)',
+    avgLine: 'rgba(230,237,243,0.85)',
+    ttBg:    '#161b22',
   };
 
   mktVolChart = new Chart(ctx, {
     type: 'bar',
     data: {
       labels,
-      datasets: [{
-        label: 'Volume (ETH)',
-        data: values,
-        backgroundColor: C.bar,
-        hoverBackgroundColor: C.barHov,
-        borderWidth: 0,
-        borderRadius: 3,
-      }]
+      datasets: [
+        {
+          label: 'Daily Volume',
+          data: volumes,
+          backgroundColor: C.bar,
+          hoverBackgroundColor: C.barHov,
+          borderWidth: 0,
+          borderRadius: 3,
+          yAxisID: 'y',
+          order: 2,
+        },
+        {
+          type: 'line',
+          label: 'Avg Sale Value',
+          data: avgs,
+          borderColor: C.avgLine,
+          backgroundColor: 'transparent',
+          borderWidth: 1.5,
+          pointRadius: 0,
+          pointHoverRadius: 3,
+          tension: 0.3,
+          yAxisID: 'y2',
+          order: 1,
+        },
+      ]
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
       animation: { duration: 300 },
+      interaction: { mode: 'index', intersect: false },
       plugins: {
-        legend: { display: false },
+        legend: {
+          display: true,
+          position: 'top',
+          align: 'end',
+          labels: {
+            color: C.muted,
+            font: { size: 11 },
+            boxWidth: 12,
+            boxHeight: 2,
+            padding: 16,
+            usePointStyle: true,
+            pointStyle: 'line',
+          }
+        },
         tooltip: {
           backgroundColor: C.ttBg,
           borderColor: C.border,
@@ -3926,28 +4045,41 @@ function renderVolumeChart(rows) {
           padding: 10,
           callbacks: {
             title: items => items[0].label,
-            label: c => `  ${c.parsed.y.toLocaleString(undefined, {maximumFractionDigits: 1})} ETH`
+            label: c => {
+              const v = c.parsed.y;
+              if (v == null) return null;
+              const fmt = v >= 1000
+                ? (v / 1000).toFixed(2) + 'k Ξ'
+                : v.toFixed(2) + ' Ξ';
+              return `  ${c.dataset.label}: ${fmt}`;
+            }
           }
         }
       },
       scales: {
         x: {
-          ticks: {
-            color: C.muted,
-            maxTicksLimit: 14,
-            maxRotation: 45,
-            font: { size: 11 }
-          },
-          grid: { color: C.border, lineWidth: 0.5 }
+          ticks: { color: C.muted, maxTicksLimit: 14, maxRotation: 45, font: { size: 11 } },
+          grid:  { color: C.border, lineWidth: 0.5 }
         },
         y: {
           beginAtZero: true,
+          position: 'left',
           ticks: {
             color: C.muted,
             font: { size: 11 },
             callback: v => v >= 1000 ? (v / 1000).toFixed(0) + 'k Ξ' : v.toFixed(0) + ' Ξ'
           },
           grid: { color: C.border, lineWidth: 0.5 }
+        },
+        y2: {
+          beginAtZero: false,
+          position: 'right',
+          ticks: {
+            color: C.muted,
+            font: { size: 11 },
+            callback: v => v.toFixed(1) + ' Ξ'
+          },
+          grid: { drawOnChartArea: false }
         }
       }
     }
@@ -3956,10 +4088,20 @@ function renderVolumeChart(rows) {
 
 async function fetchMarketData() {
   try {
-    const data = await fetch(`/api/market?days=${marketDays}`).then(r => r.json());
+    const url = marketSince
+      ? `/api/market?since=${marketSince}`
+      : `/api/market?days=${marketDays}`;
+    const data = await fetch(url).then(r => r.json());
     marketRows = data.rows || [];
-    renderMarketOverview(marketRows);
+    renderMarketOverview(marketRows, data.cutoff_ts);
     renderMarketTable(marketRows);
+    const sinceLabel = document.getElementById('market-since-label');
+    if (marketSince && data.cutoff_ts) {
+      sinceLabel.textContent = 'Since: ' + new Date(data.cutoff_ts * 1000).toLocaleString();
+      sinceLabel.style.display = '';
+    } else {
+      sinceLabel.style.display = 'none';
+    }
     if (!marketSyncRunning) marketSyncLabel();
   } catch (e) {
     document.getElementById('mkt-table-wrap').innerHTML =
@@ -3968,14 +4110,34 @@ async function fetchMarketData() {
 }
 
 function setMarketWindow(days) {
-  marketDays = days;
+  marketSince = null;
+  marketDays  = days;
   document.querySelectorAll('[id^="mkt-btn-"]').forEach(b => b.classList.remove('active'));
   const known = { 1: 'mkt-btn-1', 7: 'mkt-btn-7', 30: 'mkt-btn-30' };
   if (known[days]) document.getElementById(known[days]).classList.add('active');
   fetchMarketData();
 }
 
-function renderMarketOverview(rows) {
+async function setMarketSince() {
+  if (!currentUserId) {
+    openUserPicker();
+    return;
+  }
+  const res = await fetch(`/api/users/${currentUserId}/checkpoint/market`, { method: 'POST' });
+  const { previous, current } = await res.json();
+  const sinceLabel = document.getElementById('market-since-label');
+  if (!previous) {
+    sinceLabel.textContent = 'No prior checkpoint — tracking from now. Click again next time to see what\'s new.';
+    sinceLabel.style.display = '';
+    return;
+  }
+  marketSince = previous;
+  document.querySelectorAll('[id^="mkt-btn-"]').forEach(b => b.classList.remove('active'));
+  document.getElementById('mkt-btn-since').classList.add('active');
+  fetchMarketData();
+}
+
+function renderMarketOverview(rows, cutoffTs) {
   const wrap = document.getElementById('mkt-overview');
   const vol = rows.reduce((s, r) => s + (r.volume_eth || 0), 0);
   const withChange = rows.filter(r => r.fp_change_pct != null);
@@ -3986,7 +4148,9 @@ function renderMarketOverview(rows) {
       <div style="font-size:11px;color:var(--muted);margin-bottom:4px">${label}</div>
       <div style="font-size:16px;font-weight:700;font-family:var(--mono)" class="${cls}">${val}</div>
     </div>`;
-  const windowLabel = marketDays === 1 ? '24h' : `${marketDays}d`;
+  const windowLabel = marketSince && cutoffTs
+    ? 'since ' + new Date(cutoffTs * 1000).toLocaleDateString()
+    : (marketDays === 1 ? '24h' : `${marketDays}d`);
   wrap.innerHTML =
     card(`Volume (${windowLabel})`, vol.toFixed(3) + ' Ξ') +
     (topGainer ? card(`Top Gainer (${windowLabel})`, `${esc(topGainer.name.slice(0,20))} +${topGainer.fp_change_pct.toFixed(1)}%`, 'pos') : '') +
@@ -4049,7 +4213,8 @@ async function openMarketDetail(slug, name) {
   document.getElementById('mkt-modal-body').innerHTML = '<div class="loader"><div class="spinner"></div></div>';
   document.getElementById('m-mkt').style.display = '';
   try {
-    const data = await fetch(`/api/market/trades/${encodeURIComponent(slug)}?days=${marketDays}`).then(r => r.json());
+    const mktQs = marketSince ? `since=${marketSince}` : `days=${marketDays}`;
+    const data = await fetch(`/api/market/trades/${encodeURIComponent(slug)}?${mktQs}`).then(r => r.json());
     const trades = data.trades || [];
     if (!trades.length) {
       document.getElementById('mkt-modal-body').innerHTML = '<p style="color:var(--muted);text-align:center;padding:24px">No trades in this window.</p>';
