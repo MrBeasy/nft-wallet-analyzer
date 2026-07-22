@@ -769,8 +769,8 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
   </div>
 
   <div id="mkt-view-watchlist">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-      <span style="font-size:13px;font-weight:600;color:var(--muted)">Collection Watchlist</span>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:8px">
+      <div id="col-list-selector-wrap" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"></div>
       <div style="display:flex;gap:6px">
         <button class="btn" title="Add collection" onclick="openMarketAdd()"
           style="color:var(--blue);font-size:15px;font-weight:700;padding:2px 12px;line-height:1.4">+</button>
@@ -803,8 +803,8 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
 
   <!-- Wallet Watchlist view -->
   <div id="mkt-view-wallets" style="display:none">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-      <span style="font-size:13px;font-weight:600;color:var(--muted)">Wallet Watchlist</span>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:8px">
+      <div id="ww-list-selector-wrap" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"></div>
       <div style="display:flex;gap:6px">
         <button class="btn" title="Add wallet" onclick="openWalletWatchlistAdd()"
           style="color:var(--blue);font-size:15px;font-weight:700;padding:2px 12px;line-height:1.4">+</button>
@@ -3984,6 +3984,123 @@ let mktActiveTab = 'watchlist';
 let mktVolChart  = null;
 let mktVolData   = null;  // full cached dataset from Dune
 
+let activeCollectionListId = null;
+let activeWalletListId     = null;
+let collectionLists        = [];
+let walletLists            = [];
+
+async function loadWatchlistSelectors() {
+  const uid = currentUserId || '';
+  try {
+    const [colData, walData] = await Promise.all([
+      fetch(`/api/watchlists?type=collection&user_id=${encodeURIComponent(uid)}`).then(r => r.json()),
+      fetch(`/api/watchlists?type=wallet&user_id=${encodeURIComponent(uid)}`).then(r => r.json()),
+    ]);
+    collectionLists = colData;
+    walletLists     = walData;
+    if (!activeCollectionListId || !collectionLists.find(l => l.id === activeCollectionListId))
+      activeCollectionListId = collectionLists[0]?.id ?? null;
+    if (!activeWalletListId || !walletLists.find(l => l.id === activeWalletListId))
+      activeWalletListId = walletLists[0]?.id ?? null;
+    renderCollectionListSelector();
+    renderWalletListSelector();
+  } catch(e) {
+    console.error('Failed to load watchlist selectors', e);
+  }
+}
+
+function renderCollectionListSelector() {
+  const wrap = document.getElementById('col-list-selector-wrap');
+  if (!wrap) return;
+  const canDelete = collectionLists.length > 1;
+  wrap.innerHTML = `
+    <select id="col-list-select" onchange="onCollectionListChange(+this.value)"
+      style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);
+             color:var(--text);font-size:12px;padding:3px 6px">
+      ${collectionLists.map(l =>
+        `<option value="${l.id}" ${l.id===activeCollectionListId?'selected':''}>${esc(l.name)} (${l.item_count})</option>`
+      ).join('')}
+    </select>
+    <button class="btn" onclick="openCreateWatchlist('collection')" style="font-size:11px;padding:2px 8px">+ New</button>
+    <button class="btn" onclick="openRenameWatchlist('collection')" style="font-size:11px;padding:2px 8px">Rename</button>
+    <button class="btn" onclick="confirmDeleteWatchlist('collection')"
+      style="font-size:11px;padding:2px 8px;color:var(--red)" ${canDelete?'':'disabled'}>Delete</button>`;
+}
+
+function renderWalletListSelector() {
+  const wrap = document.getElementById('ww-list-selector-wrap');
+  if (!wrap) return;
+  const canDelete = walletLists.length > 1;
+  wrap.innerHTML = `
+    <select id="ww-list-select" onchange="onWalletListChange(+this.value)"
+      style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);
+             color:var(--text);font-size:12px;padding:3px 6px">
+      ${walletLists.map(l =>
+        `<option value="${l.id}" ${l.id===activeWalletListId?'selected':''}>${esc(l.name)} (${l.item_count})</option>`
+      ).join('')}
+    </select>
+    <button class="btn" onclick="openCreateWatchlist('wallet')" style="font-size:11px;padding:2px 8px">+ New</button>
+    <button class="btn" onclick="openRenameWatchlist('wallet')" style="font-size:11px;padding:2px 8px">Rename</button>
+    <button class="btn" onclick="confirmDeleteWatchlist('wallet')"
+      style="font-size:11px;padding:2px 8px;color:var(--red)" ${canDelete?'':'disabled'}>Delete</button>`;
+}
+
+async function onCollectionListChange(id) {
+  activeCollectionListId = id;
+  await fetchMarketData();
+}
+
+async function onWalletListChange(id) {
+  activeWalletListId = id;
+  await fetchWalletWatchlist();
+}
+
+async function openCreateWatchlist(type) {
+  const name = prompt(`Name for new ${type} watchlist:`);
+  if (!name || !name.trim()) return;
+  const res = await fetch('/api/watchlists', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ type, name: name.trim(), user_id: currentUserId || '' }),
+  });
+  if (!res.ok) { alert((await res.json().catch(()=>({}))).error || 'Failed to create'); return; }
+  const data = await res.json();
+  if (type === 'collection') activeCollectionListId = data.id;
+  else activeWalletListId = data.id;
+  await loadWatchlistSelectors();
+  if (type === 'collection') await fetchMarketData();
+  else await fetchWalletWatchlist();
+}
+
+async function openRenameWatchlist(type) {
+  const id    = type === 'collection' ? activeCollectionListId : activeWalletListId;
+  const lists = type === 'collection' ? collectionLists : walletLists;
+  const curr  = lists.find(l => l.id === id);
+  const name  = prompt('Rename watchlist:', curr?.name || '');
+  if (!name || !name.trim()) return;
+  const res = await fetch(`/api/watchlists/${id}`, {
+    method: 'PATCH',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ name: name.trim() }),
+  });
+  if (!res.ok) { alert((await res.json().catch(()=>({}))).error || 'Failed to rename'); return; }
+  await loadWatchlistSelectors();
+}
+
+async function confirmDeleteWatchlist(type) {
+  const id    = type === 'collection' ? activeCollectionListId : activeWalletListId;
+  const lists = type === 'collection' ? collectionLists : walletLists;
+  const curr  = lists.find(l => l.id === id);
+  if (!confirm(`Delete watchlist "${curr?.name}"? All ${curr?.item_count ?? 0} items will be removed.`)) return;
+  const res = await fetch(`/api/watchlists/${id}`, { method: 'DELETE' });
+  if (!res.ok) { alert((await res.json().catch(()=>({}))).error || 'Failed to delete'); return; }
+  if (type === 'collection') activeCollectionListId = null;
+  else activeWalletListId = null;
+  await loadWatchlistSelectors();
+  if (type === 'collection') await fetchMarketData();
+  else await fetchWalletWatchlist();
+}
+
 async function loadMarket() {
   ['view-home','view-detail','view-meta','view-dune',
    'view-collection','view-benchmark','view-coltrades'].forEach(id =>
@@ -3999,6 +4116,7 @@ async function loadMarket() {
       ? 'last: ' + new Date(marketLastCheckedAt * 1000).toLocaleString()
       : '';
   }
+  await loadWatchlistSelectors();
   await fetchMarketData();
   runMarketSync({ force: false });
 }
@@ -4157,9 +4275,11 @@ function renderVolumeChart(allRows, days) {
 
 async function fetchMarketData() {
   try {
-    const url = marketSince
+    let url = marketSince
       ? `/api/market?since=${marketSince}`
       : `/api/market?days=${marketDays}`;
+    url += `&user_id=${encodeURIComponent(currentUserId||'')}`;
+    if (activeCollectionListId) url += `&list_id=${activeCollectionListId}`;
     const data = await fetch(url).then(r => r.json());
     marketRows = data.rows || [];
     renderMarketOverview(marketRows, data.cutoff_ts);
@@ -4359,7 +4479,7 @@ function marketAddSearch() {
   }
   mktAddTimer = setTimeout(async () => {
     try {
-      const data = await fetch(`/api/watchlist/search?q=${encodeURIComponent(q)}`).then(r => r.json());
+      const data = await fetch(`/api/watchlist/search?q=${encodeURIComponent(q)}&user_id=${encodeURIComponent(currentUserId||'')}${activeCollectionListId?`&list_id=${activeCollectionListId}`:''}`).then(r => r.json());
       renderMktAddResults(data.results || []);
     } catch {}
   }, 300);
@@ -4400,7 +4520,7 @@ async function confirmAddWatchlist() {
       const res = await fetch('/api/watchlist/bulk', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ slugs: bulkSlugs }),
+        body: JSON.stringify({ slugs: bulkSlugs, user_id: currentUserId||'', list_id: activeCollectionListId }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -4429,7 +4549,7 @@ async function confirmAddWatchlist() {
     const res = await fetch('/api/watchlist', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ slug: mktAddSel.slug }),
+      body: JSON.stringify({ slug: mktAddSel.slug, user_id: currentUserId||'', list_id: activeCollectionListId }),
     });
     if (!res.ok) {
       const e = await res.json().catch(() => ({}));
@@ -4467,7 +4587,8 @@ function renderMktRemoveList() {
 }
 
 async function removeFromWatchlist(slug) {
-  await fetch(`/api/watchlist/${encodeURIComponent(slug)}`, { method: 'DELETE' });
+  const params = `user_id=${encodeURIComponent(currentUserId||'')}${activeCollectionListId?`&list_id=${activeCollectionListId}`:''}`;
+  await fetch(`/api/watchlist/${encodeURIComponent(slug)}?${params}`, { method: 'DELETE' });
   await fetchMarketData();
   if (document.getElementById('m-mkt-remove').style.display !== 'none') renderMktRemoveList();
 }
@@ -4482,9 +4603,11 @@ async function fetchWalletWatchlist() {
   const wrap = document.getElementById('ww-table-wrap');
   wrap.innerHTML = '<p style="color:var(--muted);font-size:12px;text-align:center">Loading…</p>';
   try {
-    const url = marketSince
+    let url = marketSince
       ? `/api/wallet-watchlist?since=${marketSince}`
       : `/api/wallet-watchlist?days=${marketDays}`;
+    url += `&user_id=${encodeURIComponent(currentUserId||'')}`;
+    if (activeWalletListId) url += `&list_id=${activeWalletListId}`;
     const data = await fetch(url).then(r => r.json());
     wwRows = data.rows || [];
     renderWalletWatchlistTable(wwRows);
@@ -4564,7 +4687,7 @@ function wwAddSearch() {
   }
   wwAddTimer = setTimeout(async () => {
     try {
-      const data = await fetch(`/api/wallet-watchlist/search?q=${encodeURIComponent(q)}`).then(r => r.json());
+      const data = await fetch(`/api/wallet-watchlist/search?q=${encodeURIComponent(q)}&user_id=${encodeURIComponent(currentUserId||'')}${activeWalletListId?`&list_id=${activeWalletListId}`:''}`).then(r => r.json());
       renderWwAddResults(data.results || []);
     } catch {}
   }, 300);
@@ -4620,7 +4743,7 @@ async function confirmWalletWatchlistAdd() {
       const res = await fetch('/api/wallet-watchlist/bulk', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ addresses: bulkAddrs }),
+        body: JSON.stringify({ addresses: bulkAddrs, user_id: currentUserId||'', list_id: activeWalletListId }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -4653,7 +4776,7 @@ async function confirmWalletWatchlistAdd() {
     const res = await fetch('/api/wallet-watchlist', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ address: wwAddSel.address, name: wwAddSel.name }),
+      body: JSON.stringify({ address: wwAddSel.address, name: wwAddSel.name, user_id: currentUserId||'', list_id: activeWalletListId }),
     });
     if (!res.ok) {
       const e = await res.json().catch(() => ({}));
@@ -4691,7 +4814,8 @@ function renderWwRemoveList() {
 }
 
 async function removeFromWalletWatchlist(address) {
-  await fetch(`/api/wallet-watchlist/${encodeURIComponent(address)}`, { method: 'DELETE' });
+  const params = `user_id=${encodeURIComponent(currentUserId||'')}${activeWalletListId?`&list_id=${activeWalletListId}`:''}`;
+  await fetch(`/api/wallet-watchlist/${encodeURIComponent(address)}?${params}`, { method: 'DELETE' });
   await fetchWalletWatchlist();
   if (document.getElementById('m-ww-remove').style.display !== 'none') renderWwRemoveList();
 }

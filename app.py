@@ -1624,18 +1624,83 @@ def api_swap_checkpoint(user_id, view_key):
     return jsonify({"previous": previous, "current": now})
 
 
+# ── API: Watchlist management ─────────────────────────────────────────────────
+
+@app.route("/api/watchlists")
+def api_list_watchlists():
+    type_   = request.args.get("type", "collection")
+    user_id = request.args.get("user_id", "")
+    if type_ not in ("collection", "wallet"):
+        return jsonify({"error": "type must be 'collection' or 'wallet'"}), 400
+    db.init_db()
+    with db.get_conn() as conn:
+        rows = db.list_watchlists(conn, type_, user_id)
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route("/api/watchlists", methods=["POST"])
+def api_create_watchlist():
+    data    = request.get_json() or {}
+    type_   = (data.get("type") or "").strip()
+    name    = (data.get("name") or "").strip()
+    user_id = data.get("user_id") or ""
+    if type_ not in ("collection", "wallet"):
+        return jsonify({"error": "type must be 'collection' or 'wallet'"}), 400
+    if not name:
+        return jsonify({"error": "name is required"}), 400
+    db.init_db()
+    with db.get_conn() as conn:
+        list_id = db.create_watchlist(conn, type_, name, user_id)
+    return jsonify({"id": list_id, "name": name}), 201
+
+
+@app.route("/api/watchlists/<int:list_id>", methods=["PATCH"])
+def api_rename_watchlist(list_id):
+    data = request.get_json() or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "name is required"}), 400
+    db.init_db()
+    with db.get_conn() as conn:
+        if not conn.execute("SELECT 1 FROM watchlists WHERE id=?", (list_id,)).fetchone():
+            return jsonify({"error": "not found"}), 404
+        db.rename_watchlist(conn, list_id, name)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/watchlists/<int:list_id>", methods=["DELETE"])
+def api_delete_watchlist(list_id):
+    db.init_db()
+    with db.get_conn() as conn:
+        row = conn.execute(
+            "SELECT type, user_id FROM watchlists WHERE id=?", (list_id,)
+        ).fetchone()
+        if not row:
+            return jsonify({"error": "not found"}), 404
+        remaining = conn.execute(
+            "SELECT COUNT(*) FROM watchlists WHERE type=? AND user_id=?",
+            (row["type"], row["user_id"]),
+        ).fetchone()[0]
+        if remaining <= 1:
+            return jsonify({"error": "Cannot delete the only watchlist of this type"}), 400
+        db.delete_watchlist(conn, list_id, row["type"])
+    return jsonify({"ok": True})
+
+
 # ── API: Market watchlist ──────────────────────────────────────────────────────
 
 @app.route("/api/market")
 def api_market():
-    since = request.args.get("since", None, type=int)
-    days  = request.args.get("days", 1, type=float)
+    since   = request.args.get("since", None, type=int)
+    days    = request.args.get("days", 1, type=float)
+    list_id = request.args.get("list_id", type=int)
+    user_id = request.args.get("user_id", "")
     db.init_db()
     now    = int(_time.time())
     cutoff = since if since is not None else (int(now - days * 86400) if days > 0 else 0)
     rows = []
     with db.get_conn() as conn:
-        watchlist = db.list_watchlist(conn)
+        watchlist = db.list_watchlist(conn, list_id, user_id)
         trade_rows = conn.execute(
             "SELECT slug, COUNT(*) AS trades, SUM(eth_amount) AS volume "
             "FROM market_trades WHERE (:c=0 OR block_timestamp>=:c) GROUP BY slug",
@@ -1701,8 +1766,13 @@ def api_market_sync():
                         info = fetch.fetch_collection_info(slug, retries=1)
                         if info.get("contract_address"):
                             with db.get_conn() as conn:
-                                db.add_watchlist(conn, slug, info.get("name") or w["name"],
-                                                 info["contract_address"])
+                                conn.execute(
+                                    "UPDATE watchlist_items SET contract_address=?, name=? "
+                                    "WHERE slug=? AND (contract_address IS NULL OR contract_address='')",
+                                    (info["contract_address"],
+                                     info.get("name") or w["name"],
+                                     slug),
+                                )
                     except Exception:
                         pass
                 yield f"data: {json.dumps({'type':'log','message':f'{slug}: fetching floor + bid...'})}\n\n"
@@ -1767,7 +1837,9 @@ def api_market_trades(slug):
 @app.route("/api/watchlist/search")
 def api_watchlist_search():
     import re as _re
-    q = (request.args.get("q") or "").strip()
+    q       = (request.args.get("q") or "").strip()
+    list_id = request.args.get("list_id", type=int)
+    user_id = request.args.get("user_id", "")
     if len(q) < 2:
         return jsonify({"results": []})
     db.init_db()
@@ -1779,7 +1851,7 @@ def api_watchlist_search():
             "ORDER BY name LIMIT 8",
             (like, like),
         ).fetchall()
-        watched = {r["slug"] for r in db.list_watchlist(conn)}
+        watched = {r["slug"] for r in db.list_watchlist(conn, list_id, user_id)}
     results = [{"slug": r["slug"], "name": r["name"] or r["slug"], "source": "local"}
                for r in rows if r["slug"] not in watched]
     # Also try the query as an OpenSea slug directly, so collections no tracked
@@ -1798,12 +1870,14 @@ def api_watchlist_search():
 @app.route("/api/watchlist/bulk", methods=["POST"])
 def api_watchlist_bulk():
     import re as _re
-    data = request.get_json() or {}
-    raw = data.get("slugs") or []
+    data    = request.get_json() or {}
+    raw     = data.get("slugs") or []
+    list_id = data.get("list_id"); list_id = int(list_id) if list_id is not None else None
+    user_id = data.get("user_id") or ""
     db.init_db()
     added = skipped = invalid = 0
     with db.get_conn() as conn:
-        existing = {r["slug"] for r in db.list_watchlist(conn)}
+        existing = {r["slug"] for r in db.list_watchlist(conn, list_id, user_id)}
         names_map = {r["slug"]: r["name"] for r in conn.execute(
             "SELECT slug, name FROM collections WHERE slug IS NOT NULL").fetchall()}
         for slug in raw:
@@ -1815,7 +1889,7 @@ def api_watchlist_bulk():
                 skipped += 1
                 continue
             name = names_map.get(slug) or slug
-            db.add_watchlist(conn, slug, name, "")
+            db.add_watchlist(conn, slug, name, "", list_id=list_id, user_id=user_id)
             existing.add(slug)
             added += 1
     return jsonify({"added": added, "skipped": skipped, "invalid": invalid})
@@ -1823,8 +1897,10 @@ def api_watchlist_bulk():
 
 @app.route("/api/watchlist", methods=["POST"])
 def api_watchlist_add():
-    data = request.get_json() or {}
-    slug = (data.get("slug") or "").strip().lower()
+    data    = request.get_json() or {}
+    slug    = (data.get("slug") or "").strip().lower()
+    list_id = data.get("list_id"); list_id = int(list_id) if list_id is not None else None
+    user_id = data.get("user_id") or ""
     if not slug:
         return jsonify({"error": "slug is required"}), 400
     try:
@@ -1835,15 +1911,18 @@ def api_watchlist_add():
         return jsonify({"error": "Collection not found on OpenSea"}), 400
     db.init_db()
     with db.get_conn() as conn:
-        db.add_watchlist(conn, slug, info["name"], info.get("contract_address", ""))
+        db.add_watchlist(conn, slug, info["name"], info.get("contract_address", ""),
+                         list_id=list_id, user_id=user_id)
     return jsonify({"slug": slug, "name": info["name"]}), 201
 
 
 @app.route("/api/watchlist/<slug>", methods=["DELETE"])
 def api_watchlist_remove(slug):
+    list_id = request.args.get("list_id", type=int)
+    user_id = request.args.get("user_id", "")
     db.init_db()
     with db.get_conn() as conn:
-        db.remove_watchlist(conn, slug.lower())
+        db.remove_watchlist(conn, slug.lower(), list_id, user_id)
     return jsonify({"ok": True})
 
 
@@ -1851,8 +1930,10 @@ def api_watchlist_remove(slug):
 
 @app.route("/api/wallet-watchlist")
 def api_wallet_watchlist_get():
-    since  = request.args.get("since",  type=int)
-    days   = request.args.get("days",   type=float)
+    since   = request.args.get("since",   type=int)
+    days    = request.args.get("days",    type=float)
+    list_id = request.args.get("list_id", type=int)
+    user_id = request.args.get("user_id", "")
     if since is not None:
         cutoff_ts = since
     elif days is not None:
@@ -1861,7 +1942,7 @@ def api_wallet_watchlist_get():
         cutoff_ts = None
     db.init_db()
     with db.get_conn() as conn:
-        ww = db.list_wallet_watchlist(conn)
+        ww = db.list_wallet_watchlist(conn, list_id, user_id)
         rows = []
         for entry in ww:
             addr = entry["address"].lower()
@@ -1878,7 +1959,9 @@ def api_wallet_watchlist_get():
 
 @app.route("/api/wallet-watchlist/search")
 def api_wallet_watchlist_search():
-    q = (request.args.get("q") or "").strip().lower()
+    q       = (request.args.get("q") or "").strip().lower()
+    list_id = request.args.get("list_id", type=int)
+    user_id = request.args.get("user_id", "")
     if len(q) < 2:
         return jsonify({"results": []})
     db.init_db()
@@ -1890,7 +1973,7 @@ def api_wallet_watchlist_search():
             "ORDER BY name LIMIT 10",
             (like, like),
         ).fetchall()
-        watched = {r["address"].lower() for r in db.list_wallet_watchlist(conn)}
+        watched = {r["address"].lower() for r in db.list_wallet_watchlist(conn, list_id, user_id)}
     results = [
         {"address": r["address"].lower(), "name": r["name"] or r["address"]}
         for r in rows if r["address"].lower() not in watched
@@ -1900,8 +1983,10 @@ def api_wallet_watchlist_search():
 
 @app.route("/api/wallet-watchlist", methods=["POST"])
 def api_wallet_watchlist_add():
-    data = request.get_json() or {}
+    data    = request.get_json() or {}
     address = (data.get("address") or "").strip().lower()
+    list_id = data.get("list_id"); list_id = int(list_id) if list_id is not None else None
+    user_id = data.get("user_id") or ""
     if not address or not address.startswith("0x") or len(address) != 42:
         return jsonify({"error": "valid 0x address required"}), 400
     name = (data.get("name") or "").strip()
@@ -1911,18 +1996,20 @@ def api_wallet_watchlist_add():
             row = conn.execute("SELECT name FROM wallets WHERE address = ?", (address,)).fetchone()
             if row and row["name"]:
                 name = row["name"]
-        db.add_wallet_watchlist(conn, address, name)
+        db.add_wallet_watchlist(conn, address, name, list_id=list_id, user_id=user_id)
     return jsonify({"address": address, "name": name}), 201
 
 
 @app.route("/api/wallet-watchlist/bulk", methods=["POST"])
 def api_wallet_watchlist_bulk():
-    data = request.get_json() or {}
-    raw = data.get("addresses") or []
+    data    = request.get_json() or {}
+    raw     = data.get("addresses") or []
+    list_id = data.get("list_id"); list_id = int(list_id) if list_id is not None else None
+    user_id = data.get("user_id") or ""
     db.init_db()
     added = skipped = invalid = 0
     with db.get_conn() as conn:
-        existing = {r["address"].lower() for r in db.list_wallet_watchlist(conn)}
+        existing = {r["address"].lower() for r in db.list_wallet_watchlist(conn, list_id, user_id)}
         names_map = {r["address"].lower(): r["name"] for r in conn.execute(
             "SELECT address, name FROM wallets").fetchall()}
         for addr in raw:
@@ -1934,7 +2021,7 @@ def api_wallet_watchlist_bulk():
                 skipped += 1
                 continue
             name = names_map.get(addr, "")
-            db.add_wallet_watchlist(conn, addr, name)
+            db.add_wallet_watchlist(conn, addr, name, list_id=list_id, user_id=user_id)
             existing.add(addr)
             added += 1
     return jsonify({"added": added, "skipped": skipped, "invalid": invalid})
@@ -1942,9 +2029,11 @@ def api_wallet_watchlist_bulk():
 
 @app.route("/api/wallet-watchlist/<address>", methods=["DELETE"])
 def api_wallet_watchlist_remove(address):
+    list_id = request.args.get("list_id", type=int)
+    user_id = request.args.get("user_id", "")
     db.init_db()
     with db.get_conn() as conn:
-        db.remove_wallet_watchlist(conn, address.lower())
+        db.remove_wallet_watchlist(conn, address.lower(), list_id, user_id)
     return jsonify({"ok": True})
 
 

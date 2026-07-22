@@ -109,6 +109,32 @@ CREATE TABLE IF NOT EXISTS wallet_watchlist (
     added_at INTEGER
 );
 
+CREATE TABLE IF NOT EXISTS watchlists (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    TEXT NOT NULL DEFAULT '',
+    type       TEXT NOT NULL,
+    name       TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS watchlist_items (
+    list_id          INTEGER NOT NULL,
+    slug             TEXT NOT NULL,
+    name             TEXT,
+    contract_address TEXT,
+    added_at         INTEGER,
+    PRIMARY KEY (list_id, slug)
+);
+
+CREATE TABLE IF NOT EXISTS wallet_watchlist_items (
+    list_id  INTEGER NOT NULL,
+    address  TEXT NOT NULL,
+    name     TEXT,
+    added_at INTEGER,
+    PRIMARY KEY (list_id, address)
+);
+
 CREATE TABLE IF NOT EXISTS market_trades (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     slug            TEXT NOT NULL,
@@ -241,6 +267,9 @@ def init_db():
         watchlist_existed = bool(conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='watchlist'"
         ).fetchone())
+        wallet_watchlist_existed = bool(conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='wallet_watchlist'"
+        ).fetchone())
         for stmt in (s.strip() for s in SCHEMA.split(";") if s.strip()):
             conn.execute(stmt)
         conn.commit()
@@ -265,13 +294,42 @@ def init_db():
                 conn.execute(col_def)
             except sqlite3.OperationalError:
                 pass
-        if not watchlist_existed:
-            now = int(_time.time())
-            for slug, name in _MARKET_SEED:
-                conn.execute(
-                    "INSERT OR IGNORE INTO watchlist (slug, name, contract_address, added_at) VALUES (?,?,?,?)",
-                    (slug, name, "", now),
-                )
+        now = int(_time.time())
+        col_list_count = conn.execute(
+            "SELECT COUNT(*) FROM watchlists WHERE type='collection' AND user_id=''"
+        ).fetchone()[0]
+        if col_list_count == 0:
+            cur = conn.execute(
+                "INSERT INTO watchlists (user_id, type, name, sort_order, created_at) "
+                "VALUES ('','collection','Default',0,?)", (now,)
+            )
+            default_col_id = cur.lastrowid
+            if watchlist_existed:
+                conn.execute("""
+                    INSERT OR IGNORE INTO watchlist_items (list_id, slug, name, contract_address, added_at)
+                    SELECT ?, slug, name, contract_address, added_at FROM watchlist
+                """, (default_col_id,))
+            else:
+                for slug, name in _MARKET_SEED:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO watchlist_items "
+                        "(list_id, slug, name, contract_address, added_at) VALUES (?,?,?,?,?)",
+                        (default_col_id, slug, name, "", now),
+                    )
+        wallet_list_count = conn.execute(
+            "SELECT COUNT(*) FROM watchlists WHERE type='wallet' AND user_id=''"
+        ).fetchone()[0]
+        if wallet_list_count == 0:
+            cur = conn.execute(
+                "INSERT INTO watchlists (user_id, type, name, sort_order, created_at) "
+                "VALUES ('','wallet','Default',0,?)", (now,)
+            )
+            default_wallet_id = cur.lastrowid
+            if wallet_watchlist_existed:
+                conn.execute("""
+                    INSERT OR IGNORE INTO wallet_watchlist_items (list_id, address, name, added_at)
+                    SELECT ?, address, name, added_at FROM wallet_watchlist
+                """, (default_wallet_id,))
         conn.commit()
     finally:
         conn.close()
@@ -603,42 +661,114 @@ def upsert_wallet_summary(conn, wallet_address: str, summary: dict, latest_trade
     ))
 
 
+# ---------- watchlist management ----------
+
+def _get_default_list_id(conn, type_: str, user_id: str = '') -> int | None:
+    row = conn.execute(
+        "SELECT id FROM watchlists WHERE type=? AND user_id=? ORDER BY sort_order, id LIMIT 1",
+        (type_, user_id),
+    ).fetchone()
+    return row["id"] if row else None
+
+
+def list_watchlists(conn, type_: str, user_id: str = '') -> list:
+    item_tbl = "watchlist_items"       if type_ == 'collection' else "wallet_watchlist_items"
+    col      = "slug"                  if type_ == 'collection' else "address"
+    return conn.execute(f"""
+        SELECT w.id, w.name, w.sort_order, COUNT(i.{col}) AS item_count
+        FROM watchlists w
+        LEFT JOIN {item_tbl} i ON i.list_id = w.id
+        WHERE w.type = ? AND w.user_id = ?
+        GROUP BY w.id ORDER BY w.sort_order, w.id
+    """, (type_, user_id)).fetchall()
+
+
+def create_watchlist(conn, type_: str, name: str, user_id: str = '') -> int:
+    import time as _time
+    cur = conn.execute(
+        "INSERT INTO watchlists (user_id, type, name, sort_order, created_at) VALUES (?,?,?,0,?)",
+        (user_id, type_, name, int(_time.time())),
+    )
+    return cur.lastrowid
+
+
+def rename_watchlist(conn, list_id: int, name: str):
+    conn.execute("UPDATE watchlists SET name=? WHERE id=?", (name, list_id))
+
+
+def delete_watchlist(conn, list_id: int, type_: str):
+    if type_ == 'collection':
+        conn.execute("DELETE FROM watchlist_items WHERE list_id=?", (list_id,))
+    else:
+        conn.execute("DELETE FROM wallet_watchlist_items WHERE list_id=?", (list_id,))
+    conn.execute("DELETE FROM watchlists WHERE id=?", (list_id,))
+
+
 # ---------- market watchlist ----------
 
-def list_watchlist(conn) -> list:
-    return conn.execute("SELECT * FROM watchlist ORDER BY name").fetchall()
+def list_watchlist(conn, list_id: int = None, user_id: str = None) -> list:
+    """With list_id: items for that list. With neither: global union (used by market sync)."""
+    if list_id is not None:
+        return conn.execute(
+            "SELECT * FROM watchlist_items WHERE list_id=? ORDER BY name", (list_id,)
+        ).fetchall()
+    return conn.execute(
+        "SELECT DISTINCT slug, name, contract_address, added_at FROM watchlist_items ORDER BY name"
+    ).fetchall()
 
 
-def add_watchlist(conn, slug: str, name: str, contract_address: str = ""):
+def add_watchlist(conn, slug: str, name: str, contract_address: str = "",
+                  list_id: int = None, user_id: str = ''):
     import time as _time
+    if list_id is None:
+        list_id = _get_default_list_id(conn, 'collection', user_id)
     conn.execute(
-        "INSERT INTO watchlist (slug, name, contract_address, added_at) VALUES (?,?,?,?) "
-        "ON CONFLICT(slug) DO UPDATE SET name=excluded.name, contract_address=excluded.contract_address",
-        (slug, name, contract_address or "", int(_time.time())),
+        "INSERT INTO watchlist_items (list_id, slug, name, contract_address, added_at) "
+        "VALUES (?,?,?,?,?) "
+        "ON CONFLICT(list_id, slug) DO UPDATE SET name=excluded.name, "
+        "contract_address=excluded.contract_address",
+        (list_id, slug, name, contract_address or "", int(_time.time())),
     )
 
 
-def remove_watchlist(conn, slug: str):
-    conn.execute("DELETE FROM watchlist WHERE slug = ?", (slug,))
+def remove_watchlist(conn, slug: str, list_id: int = None, user_id: str = ''):
+    if list_id is None:
+        list_id = _get_default_list_id(conn, 'collection', user_id)
+    conn.execute("DELETE FROM watchlist_items WHERE list_id=? AND slug=?", (list_id, slug))
 
 
 # ---------- wallet watchlist ----------
 
-def list_wallet_watchlist(conn) -> list:
-    return conn.execute("SELECT * FROM wallet_watchlist ORDER BY name").fetchall()
+def list_wallet_watchlist(conn, list_id: int = None, user_id: str = None) -> list:
+    if list_id is not None:
+        return conn.execute(
+            "SELECT * FROM wallet_watchlist_items WHERE list_id=? ORDER BY name", (list_id,)
+        ).fetchall()
+    return conn.execute(
+        "SELECT DISTINCT address, name, added_at FROM wallet_watchlist_items ORDER BY name"
+    ).fetchall()
 
 
-def add_wallet_watchlist(conn, address: str, name: str = ""):
+def add_wallet_watchlist(conn, address: str, name: str = "",
+                          list_id: int = None, user_id: str = ''):
     import time as _time
+    if list_id is None:
+        list_id = _get_default_list_id(conn, 'wallet', user_id)
     conn.execute(
-        "INSERT INTO wallet_watchlist (address, name, added_at) VALUES (?,?,?) "
-        "ON CONFLICT(address) DO UPDATE SET name=excluded.name",
-        (address.lower(), name or "", int(_time.time())),
+        "INSERT INTO wallet_watchlist_items (list_id, address, name, added_at) "
+        "VALUES (?,?,?,?) "
+        "ON CONFLICT(list_id, address) DO UPDATE SET name=excluded.name",
+        (list_id, address.lower(), name or "", int(_time.time())),
     )
 
 
-def remove_wallet_watchlist(conn, address: str):
-    conn.execute("DELETE FROM wallet_watchlist WHERE address = ?", (address.lower(),))
+def remove_wallet_watchlist(conn, address: str, list_id: int = None, user_id: str = ''):
+    if list_id is None:
+        list_id = _get_default_list_id(conn, 'wallet', user_id)
+    conn.execute(
+        "DELETE FROM wallet_watchlist_items WHERE list_id=? AND address=?",
+        (list_id, address.lower()),
+    )
 
 
 # ---------- market trades ----------
