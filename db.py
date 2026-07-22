@@ -330,6 +330,32 @@ def init_db():
                     INSERT OR IGNORE INTO wallet_watchlist_items (list_id, address, name, added_at)
                     SELECT ?, address, name, added_at FROM wallet_watchlist
                 """, (default_wallet_id,))
+        # For every dashboard user that has no collection watchlist yet, seed one
+        # by copying items from the shared user_id='' default list.
+        global_col_list = conn.execute(
+            "SELECT id FROM watchlists WHERE type='collection' AND user_id='' "
+            "ORDER BY sort_order, id LIMIT 1"
+        ).fetchone()
+        if global_col_list:
+            src_id = global_col_list["id"]
+            users = conn.execute("SELECT id FROM dashboard_users").fetchall()
+            for u in users:
+                uid = u["id"]
+                has_list = conn.execute(
+                    "SELECT 1 FROM watchlists WHERE type='collection' AND user_id=?", (uid,)
+                ).fetchone()
+                if not has_list:
+                    cur = conn.execute(
+                        "INSERT INTO watchlists (user_id, type, name, sort_order, created_at) "
+                        "VALUES (?,?,?,0,?)", (uid, 'collection', 'Default', now)
+                    )
+                    new_id = cur.lastrowid
+                    conn.execute("""
+                        INSERT OR IGNORE INTO watchlist_items
+                            (list_id, slug, name, contract_address, added_at)
+                        SELECT ?, slug, name, contract_address, added_at
+                        FROM watchlist_items WHERE list_id=?
+                    """, (new_id, src_id))
         conn.commit()
     finally:
         conn.close()
