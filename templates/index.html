@@ -4438,11 +4438,11 @@ async function openMarketDetail(slug, name) {
   }
 }
 
-let mktAddSel = null;
+let mktAddSel = [];
 let mktAddTimer = null;
 
 function openMarketAdd() {
-  mktAddSel = null;
+  mktAddSel = [];
   document.getElementById('mkt-add-q').value = '';
   document.getElementById('mkt-add-slugs').value = '';
   document.getElementById('mkt-add-results').innerHTML = '';
@@ -4455,8 +4455,7 @@ function openMarketAdd() {
 
 function mktSlugsPaste() {
   const hasSlugs = parseMktSlugs(document.getElementById('mkt-add-slugs').value).length > 0;
-  if (hasSlugs) mktAddSel = null;
-  document.getElementById('mkt-add-confirm').disabled = !hasSlugs && !mktAddSel;
+  document.getElementById('mkt-add-confirm').disabled = !hasSlugs && !mktAddSel.length;
 }
 
 function parseMktSlugs(raw) {
@@ -4472,7 +4471,7 @@ function marketAddSearch() {
   const q = document.getElementById('mkt-add-q').value.trim();
   if (q.length < 2) {
     document.getElementById('mkt-add-results').innerHTML = '';
-    mktAddSel = null;
+    mktAddSel = [];
     document.getElementById('mkt-add-confirm').disabled =
       parseMktSlugs(document.getElementById('mkt-add-slugs').value).length === 0;
     return;
@@ -4487,8 +4486,9 @@ function marketAddSearch() {
 
 function renderMktAddResults(results) {
   const wrap = document.getElementById('mkt-add-results');
-  mktAddSel = null;
-  document.getElementById('mkt-add-confirm').disabled = true;
+  mktAddSel = [];
+  document.getElementById('mkt-add-confirm').disabled =
+    parseMktSlugs(document.getElementById('mkt-add-slugs').value).length === 0;
   if (!results.length) {
     wrap.innerHTML = '<p style="color:var(--muted);font-size:12px;margin:8px 0 0">No matches.</p>';
     return;
@@ -4501,10 +4501,17 @@ function renderMktAddResults(results) {
 }
 
 function selectMktAdd(el) {
-  document.querySelectorAll('.mkt-add-item').forEach(d => d.classList.remove('sel'));
-  el.classList.add('sel');
-  mktAddSel = { slug: el.dataset.slug, name: el.dataset.name };
-  document.getElementById('mkt-add-confirm').disabled = false;
+  const slug = el.dataset.slug;
+  const idx  = mktAddSel.findIndex(s => s.slug === slug);
+  if (idx >= 0) {
+    mktAddSel.splice(idx, 1);
+    el.classList.remove('sel');
+  } else {
+    mktAddSel.push({ slug, name: el.dataset.name });
+    el.classList.add('sel');
+  }
+  document.getElementById('mkt-add-confirm').disabled =
+    !mktAddSel.length && parseMktSlugs(document.getElementById('mkt-add-slugs').value).length === 0;
 }
 
 async function confirmAddWatchlist() {
@@ -4543,17 +4550,17 @@ async function confirmAddWatchlist() {
     return;
   }
 
-  // Single path: search selection
-  if (!mktAddSel) return;
+  // Search-selection path (one or more items ticked)
+  if (!mktAddSel.length) return;
   try {
-    const res = await fetch('/api/watchlist', {
+    const res = await fetch('/api/watchlist/bulk', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ slug: mktAddSel.slug, user_id: currentUserId||'', list_id: activeCollectionListId }),
+      body: JSON.stringify({ slugs: mktAddSel.map(s => s.slug), user_id: currentUserId||'', list_id: activeCollectionListId }),
     });
+    const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      const e = await res.json().catch(() => ({}));
-      errEl.textContent = e.error || 'Failed to add collection.';
+      errEl.textContent = data.error || 'Failed to add collection.';
       errEl.style.display = '';
       return;
     }
@@ -4596,7 +4603,7 @@ async function removeFromWatchlist(slug) {
 // ── Wallet Watchlist ──────────────────────────────────────────────────────────
 
 let wwRows = [];
-let wwAddSel = null;
+let wwAddSel = [];
 let wwAddTimer = null;
 
 async function fetchWalletWatchlist() {
@@ -4665,7 +4672,7 @@ function renderWwRow(row) {
 }
 
 function openWalletWatchlistAdd() {
-  wwAddSel = null;
+  wwAddSel = [];
   document.getElementById('ww-add-q').value = '';
   document.getElementById('ww-add-addr').value = '';
   document.getElementById('ww-add-results').innerHTML = '';
@@ -4681,7 +4688,7 @@ function wwAddSearch() {
   const q = document.getElementById('ww-add-q').value.trim();
   if (q.length < 2) {
     document.getElementById('ww-add-results').innerHTML = '';
-    wwAddSel = null;
+    wwAddSel = [];
     document.getElementById('ww-add-confirm').disabled = parseWwAddresses(document.getElementById('ww-add-addr').value).length === 0;
     return;
   }
@@ -4696,8 +4703,7 @@ function wwAddSearch() {
 function wwAddressPaste() {
   const raw = document.getElementById('ww-add-addr').value;
   const hasValid = parseWwAddresses(raw).length > 0;
-  if (hasValid) wwAddSel = null; // textarea takes priority over search selection
-  document.getElementById('ww-add-confirm').disabled = !hasValid && !wwAddSel;
+  document.getElementById('ww-add-confirm').disabled = !hasValid && !wwAddSel.length;
 }
 
 function parseWwAddresses(raw) {
@@ -4710,8 +4716,9 @@ function parseWwAddresses(raw) {
 
 function renderWwAddResults(results) {
   const wrap = document.getElementById('ww-add-results');
-  wwAddSel = null;
-  document.getElementById('ww-add-confirm').disabled = true;
+  wwAddSel = [];
+  document.getElementById('ww-add-confirm').disabled =
+    parseWwAddresses(document.getElementById('ww-add-addr').value).length === 0;
   if (!results.length) {
     wrap.innerHTML = '<p style="color:var(--muted);font-size:12px;margin:8px 0 0">No matches.</p>';
     return;
@@ -4724,10 +4731,17 @@ function renderWwAddResults(results) {
 }
 
 function selectWwAdd(el) {
-  document.querySelectorAll('.mkt-add-item').forEach(d => d.classList.remove('sel'));
-  el.classList.add('sel');
-  wwAddSel = { address: el.dataset.address, name: el.dataset.name };
-  document.getElementById('ww-add-confirm').disabled = false;
+  const address = el.dataset.address;
+  const idx     = wwAddSel.findIndex(s => s.address === address);
+  if (idx >= 0) {
+    wwAddSel.splice(idx, 1);
+    el.classList.remove('sel');
+  } else {
+    wwAddSel.push({ address, name: el.dataset.name });
+    el.classList.add('sel');
+  }
+  document.getElementById('ww-add-confirm').disabled =
+    !wwAddSel.length && parseWwAddresses(document.getElementById('ww-add-addr').value).length === 0;
 }
 
 async function confirmWalletWatchlistAdd() {
@@ -4766,21 +4780,21 @@ async function confirmWalletWatchlistAdd() {
     return;
   }
 
-  // Single path: search selection
-  if (!wwAddSel) {
+  // Search-selection path (one or more wallets ticked)
+  if (!wwAddSel.length) {
     errEl.textContent = 'Enter or select a valid 0x address.';
     errEl.style.display = '';
     return;
   }
   try {
-    const res = await fetch('/api/wallet-watchlist', {
+    const res = await fetch('/api/wallet-watchlist/bulk', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ address: wwAddSel.address, name: wwAddSel.name, user_id: currentUserId||'', list_id: activeWalletListId }),
+      body: JSON.stringify({ addresses: wwAddSel.map(s => s.address), user_id: currentUserId||'', list_id: activeWalletListId }),
     });
+    const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      const e = await res.json().catch(() => ({}));
-      errEl.textContent = e.error || 'Failed to add wallet.';
+      errEl.textContent = data.error || 'Failed to add wallet.';
       errEl.style.display = '';
       return;
     }
