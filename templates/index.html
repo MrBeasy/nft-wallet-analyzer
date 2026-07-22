@@ -851,7 +851,14 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
             oninput="marketAddSearch()" onkeydown="if(event.key==='Enter'&&mktAddSel)confirmAddWatchlist()">
         </div>
         <div id="mkt-add-results"></div>
+        <div class="fg" style="margin-top:10px">
+          <label class="flbl">Or paste slugs (one per line for bulk import)</label>
+          <textarea id="mkt-add-slugs" class="finp" rows="4" placeholder="boredapeyachtclub&#10;cryptopunks&#10;…"
+            oninput="mktSlugsPaste()"
+            style="resize:vertical;font-family:var(--mono);font-size:12px"></textarea>
+        </div>
         <span id="mkt-add-err" style="font-size:12px;color:var(--red);display:none"></span>
+        <span id="mkt-add-ok"  style="font-size:12px;color:var(--green);display:none"></span>
       </div>
       <div class="modal-foot">
         <button class="btn btn-primary btn-full" id="mkt-add-confirm" onclick="confirmAddWatchlist()" disabled>Add</button>
@@ -885,11 +892,13 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
         </div>
         <div id="ww-add-results"></div>
         <div class="fg" style="margin-top:10px">
-          <label class="flbl">Or paste address directly</label>
-          <input id="ww-add-addr" type="text" class="finp" placeholder="0x…"
-            oninput="wwAddressPaste()" onkeydown="if(event.key==='Enter')confirmWalletWatchlistAdd()">
+          <label class="flbl">Or paste addresses (one per line for bulk import)</label>
+          <textarea id="ww-add-addr" class="finp" rows="4" placeholder="0x…&#10;0x…&#10;0x…"
+            oninput="wwAddressPaste()"
+            style="resize:vertical;font-family:var(--mono);font-size:12px"></textarea>
         </div>
         <span id="ww-add-err" style="font-size:12px;color:var(--red);display:none"></span>
+        <span id="ww-add-ok"  style="font-size:12px;color:var(--green);display:none"></span>
       </div>
       <div class="modal-foot">
         <button class="btn btn-primary btn-full" id="ww-add-confirm" onclick="confirmWalletWatchlistAdd()" disabled>Add</button>
@@ -4315,11 +4324,27 @@ let mktAddTimer = null;
 function openMarketAdd() {
   mktAddSel = null;
   document.getElementById('mkt-add-q').value = '';
+  document.getElementById('mkt-add-slugs').value = '';
   document.getElementById('mkt-add-results').innerHTML = '';
   document.getElementById('mkt-add-err').style.display = 'none';
+  document.getElementById('mkt-add-ok').style.display  = 'none';
   document.getElementById('mkt-add-confirm').disabled = true;
   document.getElementById('m-mkt-add').style.display = '';
   document.getElementById('mkt-add-q').focus();
+}
+
+function mktSlugsPaste() {
+  const hasSlugs = parseMktSlugs(document.getElementById('mkt-add-slugs').value).length > 0;
+  if (hasSlugs) mktAddSel = null;
+  document.getElementById('mkt-add-confirm').disabled = !hasSlugs && !mktAddSel;
+}
+
+function parseMktSlugs(raw) {
+  return [...new Set(
+    raw.split(/[\s,;]+/)
+      .map(s => s.trim().toLowerCase())
+      .filter(s => s.length > 0 && /^[a-z0-9-]+$/.test(s))
+  )];
 }
 
 function marketAddSearch() {
@@ -4328,7 +4353,8 @@ function marketAddSearch() {
   if (q.length < 2) {
     document.getElementById('mkt-add-results').innerHTML = '';
     mktAddSel = null;
-    document.getElementById('mkt-add-confirm').disabled = true;
+    document.getElementById('mkt-add-confirm').disabled =
+      parseMktSlugs(document.getElementById('mkt-add-slugs').value).length === 0;
     return;
   }
   mktAddTimer = setTimeout(async () => {
@@ -4362,9 +4388,43 @@ function selectMktAdd(el) {
 }
 
 async function confirmAddWatchlist() {
-  if (!mktAddSel) return;
   const errEl = document.getElementById('mkt-add-err');
+  const okEl  = document.getElementById('mkt-add-ok');
   errEl.style.display = 'none';
+  okEl.style.display  = 'none';
+
+  // Bulk path: textarea has slugs
+  const bulkSlugs = parseMktSlugs(document.getElementById('mkt-add-slugs').value);
+  if (bulkSlugs.length > 0) {
+    try {
+      const res = await fetch('/api/watchlist/bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slugs: bulkSlugs }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        errEl.textContent = data.error || 'Bulk import failed.';
+        errEl.style.display = '';
+        return;
+      }
+      const parts = [`${data.added} added`];
+      if (data.skipped) parts.push(`${data.skipped} already in watchlist`);
+      if (data.invalid) parts.push(`${data.invalid} invalid`);
+      okEl.textContent = parts.join(', ') + '.';
+      okEl.style.display = '';
+      document.getElementById('mkt-add-slugs').value = '';
+      document.getElementById('mkt-add-confirm').disabled = true;
+      await fetchMarketData();
+    } catch {
+      errEl.textContent = 'Request failed.';
+      errEl.style.display = '';
+    }
+    return;
+  }
+
+  // Single path: search selection
+  if (!mktAddSel) return;
   try {
     const res = await fetch('/api/watchlist', {
       method: 'POST',
@@ -4487,6 +4547,7 @@ function openWalletWatchlistAdd() {
   document.getElementById('ww-add-addr').value = '';
   document.getElementById('ww-add-results').innerHTML = '';
   document.getElementById('ww-add-err').style.display = 'none';
+  document.getElementById('ww-add-ok').style.display = 'none';
   document.getElementById('ww-add-confirm').disabled = true;
   document.getElementById('m-ww-add').style.display = '';
   document.getElementById('ww-add-q').focus();
@@ -4498,7 +4559,7 @@ function wwAddSearch() {
   if (q.length < 2) {
     document.getElementById('ww-add-results').innerHTML = '';
     wwAddSel = null;
-    document.getElementById('ww-add-confirm').disabled = !document.getElementById('ww-add-addr').value.trim().startsWith('0x');
+    document.getElementById('ww-add-confirm').disabled = parseWwAddresses(document.getElementById('ww-add-addr').value).length === 0;
     return;
   }
   wwAddTimer = setTimeout(async () => {
@@ -4510,9 +4571,18 @@ function wwAddSearch() {
 }
 
 function wwAddressPaste() {
-  const addr = document.getElementById('ww-add-addr').value.trim();
-  wwAddSel = addr.startsWith('0x') && addr.length === 42 ? { address: addr, name: '' } : null;
-  document.getElementById('ww-add-confirm').disabled = !wwAddSel;
+  const raw = document.getElementById('ww-add-addr').value;
+  const hasValid = parseWwAddresses(raw).length > 0;
+  if (hasValid) wwAddSel = null; // textarea takes priority over search selection
+  document.getElementById('ww-add-confirm').disabled = !hasValid && !wwAddSel;
+}
+
+function parseWwAddresses(raw) {
+  return [...new Set(
+    raw.split(/[\s,;]+/)
+      .map(s => s.trim().toLowerCase())
+      .filter(s => s.startsWith('0x') && s.length === 42)
+  )];
 }
 
 function renderWwAddResults(results) {
@@ -4539,13 +4609,42 @@ function selectWwAdd(el) {
 
 async function confirmWalletWatchlistAdd() {
   const errEl = document.getElementById('ww-add-err');
+  const okEl  = document.getElementById('ww-add-ok');
   errEl.style.display = 'none';
-  // Prefer search selection; fall back to direct address input
-  const sel = wwAddSel || (() => {
-    const addr = document.getElementById('ww-add-addr').value.trim().toLowerCase();
-    return addr.startsWith('0x') && addr.length === 42 ? { address: addr, name: '' } : null;
-  })();
-  if (!sel) {
+  okEl.style.display  = 'none';
+
+  // Bulk path: textarea has addresses
+  const bulkAddrs = parseWwAddresses(document.getElementById('ww-add-addr').value);
+  if (bulkAddrs.length > 0) {
+    try {
+      const res = await fetch('/api/wallet-watchlist/bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ addresses: bulkAddrs }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        errEl.textContent = data.error || 'Bulk import failed.';
+        errEl.style.display = '';
+        return;
+      }
+      const parts = [`${data.added} added`];
+      if (data.skipped) parts.push(`${data.skipped} already in watchlist`);
+      if (data.invalid) parts.push(`${data.invalid} invalid`);
+      okEl.textContent = parts.join(', ') + '.';
+      okEl.style.display = '';
+      document.getElementById('ww-add-addr').value = '';
+      document.getElementById('ww-add-confirm').disabled = true;
+      await fetchWalletWatchlist();
+    } catch {
+      errEl.textContent = 'Request failed.';
+      errEl.style.display = '';
+    }
+    return;
+  }
+
+  // Single path: search selection
+  if (!wwAddSel) {
     errEl.textContent = 'Enter or select a valid 0x address.';
     errEl.style.display = '';
     return;
@@ -4554,7 +4653,7 @@ async function confirmWalletWatchlistAdd() {
     const res = await fetch('/api/wallet-watchlist', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ address: sel.address, name: sel.name }),
+      body: JSON.stringify({ address: wwAddSel.address, name: wwAddSel.name }),
     });
     if (!res.ok) {
       const e = await res.json().catch(() => ({}));

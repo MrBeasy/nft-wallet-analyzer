@@ -1795,6 +1795,32 @@ def api_watchlist_search():
     return jsonify({"results": results[:8]})
 
 
+@app.route("/api/watchlist/bulk", methods=["POST"])
+def api_watchlist_bulk():
+    import re as _re
+    data = request.get_json() or {}
+    raw = data.get("slugs") or []
+    db.init_db()
+    added = skipped = invalid = 0
+    with db.get_conn() as conn:
+        existing = {r["slug"] for r in db.list_watchlist(conn)}
+        names_map = {r["slug"]: r["name"] for r in conn.execute(
+            "SELECT slug, name FROM collections WHERE slug IS NOT NULL").fetchall()}
+        for slug in raw:
+            slug = (slug or "").strip().lower()
+            if not slug or not _re.match(r'^[a-z0-9-]+$', slug):
+                invalid += 1
+                continue
+            if slug in existing:
+                skipped += 1
+                continue
+            name = names_map.get(slug) or slug
+            db.add_watchlist(conn, slug, name, "")
+            existing.add(slug)
+            added += 1
+    return jsonify({"added": added, "skipped": skipped, "invalid": invalid})
+
+
 @app.route("/api/watchlist", methods=["POST"])
 def api_watchlist_add():
     data = request.get_json() or {}
@@ -1887,6 +1913,31 @@ def api_wallet_watchlist_add():
                 name = row["name"]
         db.add_wallet_watchlist(conn, address, name)
     return jsonify({"address": address, "name": name}), 201
+
+
+@app.route("/api/wallet-watchlist/bulk", methods=["POST"])
+def api_wallet_watchlist_bulk():
+    data = request.get_json() or {}
+    raw = data.get("addresses") or []
+    db.init_db()
+    added = skipped = invalid = 0
+    with db.get_conn() as conn:
+        existing = {r["address"].lower() for r in db.list_wallet_watchlist(conn)}
+        names_map = {r["address"].lower(): r["name"] for r in conn.execute(
+            "SELECT address, name FROM wallets").fetchall()}
+        for addr in raw:
+            addr = (addr or "").strip().lower()
+            if not addr.startswith("0x") or len(addr) != 42:
+                invalid += 1
+                continue
+            if addr in existing:
+                skipped += 1
+                continue
+            name = names_map.get(addr, "")
+            db.add_wallet_watchlist(conn, addr, name)
+            existing.add(addr)
+            added += 1
+    return jsonify({"added": added, "skipped": skipped, "invalid": invalid})
 
 
 @app.route("/api/wallet-watchlist/<address>", methods=["DELETE"])
