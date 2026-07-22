@@ -1821,6 +1821,82 @@ def api_watchlist_remove(slug):
     return jsonify({"ok": True})
 
 
+# ── API: Wallet Watchlist ──────────────────────────────────────────────────────
+
+@app.route("/api/wallet-watchlist")
+def api_wallet_watchlist_get():
+    since  = request.args.get("since",  type=int)
+    days   = request.args.get("days",   type=float)
+    if since is not None:
+        cutoff_ts = since
+    elif days is not None:
+        cutoff_ts = int(_time.time() - days * 86400)
+    else:
+        cutoff_ts = None
+    db.init_db()
+    with db.get_conn() as conn:
+        ww = db.list_wallet_watchlist(conn)
+        rows = []
+        for entry in ww:
+            addr = entry["address"].lower()
+            label = entry["name"] or addr
+            ar = get_cached_analytics(conn, addr)
+            matched = ar.get("matched_trades", [])
+            if cutoff_ts is not None:
+                matched = [m for m in matched if m["sell_ts"] >= cutoff_ts]
+            stats = _wallet_stats_from_matched(matched)
+            rows.append({"address": addr, "name": label, **stats})
+    rows.sort(key=lambda x: -(x.get("realized_pnl_eth") or 0))
+    return jsonify({"rows": rows, "days": days, "cutoff_ts": cutoff_ts})
+
+
+@app.route("/api/wallet-watchlist/search")
+def api_wallet_watchlist_search():
+    q = (request.args.get("q") or "").strip().lower()
+    if len(q) < 2:
+        return jsonify({"results": []})
+    db.init_db()
+    like = f"%{q}%"
+    with db.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT address, name FROM wallets "
+            "WHERE (LOWER(address) LIKE ? OR LOWER(COALESCE(name,'')) LIKE ?) "
+            "ORDER BY name LIMIT 10",
+            (like, like),
+        ).fetchall()
+        watched = {r["address"].lower() for r in db.list_wallet_watchlist(conn)}
+    results = [
+        {"address": r["address"].lower(), "name": r["name"] or r["address"]}
+        for r in rows if r["address"].lower() not in watched
+    ]
+    return jsonify({"results": results[:8]})
+
+
+@app.route("/api/wallet-watchlist", methods=["POST"])
+def api_wallet_watchlist_add():
+    data = request.get_json() or {}
+    address = (data.get("address") or "").strip().lower()
+    if not address or not address.startswith("0x") or len(address) != 42:
+        return jsonify({"error": "valid 0x address required"}), 400
+    name = (data.get("name") or "").strip()
+    db.init_db()
+    with db.get_conn() as conn:
+        if not name:
+            row = conn.execute("SELECT name FROM wallets WHERE address = ?", (address,)).fetchone()
+            if row and row["name"]:
+                name = row["name"]
+        db.add_wallet_watchlist(conn, address, name)
+    return jsonify({"address": address, "name": name}), 201
+
+
+@app.route("/api/wallet-watchlist/<address>", methods=["DELETE"])
+def api_wallet_watchlist_remove(address):
+    db.init_db()
+    with db.get_conn() as conn:
+        db.remove_wallet_watchlist(conn, address.lower())
+    return jsonify({"ok": True})
+
+
 # ── API: Col Trading (sister project's market-wide sales data) ────────────────
 
 @app.route("/api/coldata/collections")

@@ -103,6 +103,12 @@ CREATE TABLE IF NOT EXISTS watchlist (
     added_at         INTEGER
 );
 
+CREATE TABLE IF NOT EXISTS wallet_watchlist (
+    address  TEXT PRIMARY KEY,
+    name     TEXT,
+    added_at INTEGER
+);
+
 CREATE TABLE IF NOT EXISTS market_trades (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     slug            TEXT NOT NULL,
@@ -614,6 +620,25 @@ def add_watchlist(conn, slug: str, name: str, contract_address: str = ""):
 
 def remove_watchlist(conn, slug: str):
     conn.execute("DELETE FROM watchlist WHERE slug = ?", (slug,))
+
+
+# ---------- wallet watchlist ----------
+
+def list_wallet_watchlist(conn) -> list:
+    return conn.execute("SELECT * FROM wallet_watchlist ORDER BY name").fetchall()
+
+
+def add_wallet_watchlist(conn, address: str, name: str = ""):
+    import time as _time
+    conn.execute(
+        "INSERT INTO wallet_watchlist (address, name, added_at) VALUES (?,?,?) "
+        "ON CONFLICT(address) DO UPDATE SET name=excluded.name",
+        (address.lower(), name or "", int(_time.time())),
+    )
+
+
+def remove_wallet_watchlist(conn, address: str):
+    conn.execute("DELETE FROM wallet_watchlist WHERE address = ?", (address.lower(),))
 
 
 # ---------- market trades ----------
