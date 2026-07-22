@@ -3992,10 +3992,7 @@ async function runVolumeQuery() {
 
 function renderVolumeChart(allRows, days) {
   let rows = [...allRows].sort((a, b) => new Date(a.day) - new Date(b.day));
-  if (days) {
-    const cutoff = Date.now() - days * 86400000;
-    rows = rows.filter(r => new Date(r.day).getTime() >= cutoff);
-  }
+  if (days && rows.length > days) rows = rows.slice(-days);
   const labels  = rows.map(r => r.day.slice(0, 10));
   const volumes = rows.map(r => parseFloat(r.trading_volume_eth) || 0);
   // Flat average line for the displayed timeframe
