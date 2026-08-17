@@ -789,7 +789,7 @@ tbody tr.clickable:hover{cursor:pointer;background:rgba(88,166,255,.07)}
                  border-radius:var(--r);color:var(--text);font-size:12px">
         <span style="color:var(--muted);font-size:12px">days</span>
       </div>
-      <button id="mkt-vol-run-btn" class="btn btn-primary" onclick="runVolumeQuery()">Run</button>
+      <button id="mkt-vol-run-btn" class="btn btn-primary" onclick="runVolumeQuery(true)">Run</button>
       <span id="mkt-vol-status" style="font-size:12px;color:var(--muted)"></span>
     </div>
     <div id="mkt-vol-loader" class="loader" style="display:none">
@@ -4133,17 +4133,19 @@ function mktSwitchTab(tab) {
   if (tab === 'wallets') fetchWalletWatchlist();
 }
 
-async function runVolumeQuery() {
+async function runVolumeQuery(force = false) {
   const days   = parseInt(document.getElementById('mkt-vol-days').value, 10) || 180;
   const status = document.getElementById('mkt-vol-status');
 
-  // If we already have the full dataset, just re-filter client-side
-  if (mktVolData) {
+  // If we already have the full dataset and not forcing a re-run, just re-filter client-side
+  if (mktVolData && !force) {
     renderVolumeChart(mktVolData, days);
     status.textContent = `showing ${days}d`;
     status.style.color = 'var(--muted)';
     return;
   }
+
+  mktVolData = null;
 
   const btn    = document.getElementById('mkt-vol-run-btn');
   const loader = document.getElementById('mkt-vol-loader');

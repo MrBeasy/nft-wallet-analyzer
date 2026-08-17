@@ -1569,16 +1569,42 @@ def api_dune_eth_volume():
     if not dune_key:
         return jsonify({"error": "DUNE_API_KEY not set"}), 500
 
-    # Use cached latest results — no execution needed for historical volume data
-    resp = _req.get(
-        f"https://api.dune.com/api/v1/query/{DUNE_ETH_VOLUME_QUERY_ID}/results",
-        headers={"X-Dune-API-Key": dune_key},
+    hdrs = {"X-Dune-API-Key": dune_key}
+
+    exec_resp = _req.post(
+        f"https://api.dune.com/api/v1/query/{DUNE_ETH_VOLUME_QUERY_ID}/execute",
+        headers=hdrs,
         timeout=15,
     )
-    if not resp.ok:
-        return jsonify({"error": f"Dune request failed: {resp.text}"}), 502
+    if not exec_resp.ok:
+        return jsonify({"error": f"Dune execute failed: {exec_resp.text}"}), 502
 
-    rows = resp.json().get("result", {}).get("rows", [])
+    execution_id = exec_resp.json()["execution_id"]
+
+    for _ in range(120):
+        status_resp = _req.get(
+            f"https://api.dune.com/api/v1/execution/{execution_id}/status",
+            headers=hdrs,
+            timeout=10,
+        )
+        state = status_resp.json().get("state", "")
+        if state == "QUERY_STATE_COMPLETED":
+            break
+        if any(s in state for s in ("FAILED", "CANCELLED", "EXPIRED")):
+            return jsonify({"error": f"Dune query {state}"}), 500
+        _time.sleep(1)
+    else:
+        return jsonify({"error": "Dune query timed out after 120s"}), 504
+
+    result_resp = _req.get(
+        f"https://api.dune.com/api/v1/execution/{execution_id}/results",
+        headers=hdrs,
+        timeout=15,
+    )
+    if not result_resp.ok:
+        return jsonify({"error": f"Dune results failed: {result_resp.text}"}), 502
+
+    rows = result_resp.json().get("result", {}).get("rows", [])
     return jsonify({"rows": rows})
 
 
